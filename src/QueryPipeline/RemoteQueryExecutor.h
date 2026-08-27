@@ -68,6 +68,9 @@ public:
     {
         String cluster;
         UInt32 shard_num = 0;
+        /// With parallel replicas the executor reads for one replica of the shard rather than
+        /// for the shard as a whole. Optional because 0 is a valid replica number.
+        std::optional<size_t> replica_num = {};
     };
 
     /// Takes a connection pool for a node (not cluster)

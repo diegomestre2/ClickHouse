@@ -265,7 +265,7 @@ ManualSpan::ManualSpan(std::string_view operation_name, SpanKind kind)
         span.start_time_us
             = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         span.addAttribute("clickhouse.thread_id", getThreadId());
-        span_log = trace_context.span_log;
+        span_log_table = trace_context.span_log;
     }
     catch (...)
     {
@@ -284,7 +284,7 @@ void ManualSpan::finish() noexcept
     try
     {
         /// The log might be disabled or already shut down, check it before use.
-        if (auto log = span_log.lock())
+        if (auto log = span_log_table.lock())
         {
             span.finish_time_us
                 = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();

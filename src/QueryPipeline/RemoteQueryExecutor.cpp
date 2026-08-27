@@ -462,6 +462,8 @@ OpenTelemetry::SpanAttributes RemoteQueryExecutor::getFragmentSpanAttributes() c
         attributes.emplace_back("clickhouse.cluster", shard_scope.cluster);
     if (shard_scope.shard_num != 0)
         attributes.emplace_back("clickhouse.shard_num", static_cast<UInt64>(shard_scope.shard_num));
+    if (shard_scope.replica_num)
+        attributes.emplace_back("clickhouse.replica_num", static_cast<UInt64>(*shard_scope.replica_num));
     attributes.emplace_back("clickhouse.processed_stage", QueryProcessingStage::toString(stage));
     const auto & client_info = context->getClientInfo();
     if (!client_info.current_query_id.empty())
