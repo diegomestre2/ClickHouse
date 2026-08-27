@@ -265,6 +265,52 @@ struct SpanHolder : public Span
     UInt8 old_trace_flags;
 };
 
+/// A span whose lifetime is managed manually tied to the lifetime of an object that is destroyed on an arbitrary thread.
+/// It captures the current tracing context but never installs itself as the ambient parent, so it may be finished on any thread
+/// It is a no-op when tracing is not enabled at construction time and the owner must provide external synchronization.
+class ManualSpan
+{
+public:
+    explicit ManualSpan(std::string_view operation_name, SpanKind kind = SpanKind::INTERNAL);
+
+    /// Forbidden copy to keep at most one emission per span.
+    ManualSpan(const ManualSpan &) = delete;
+    ManualSpan & operator=(const ManualSpan &) = delete;
+
+    /// Emits the span if `finish` has not been called before.
+    ~ManualSpan();
+
+    bool isTraceEnabled() const
+    {
+        return span.isTraceEnabled();
+    }
+
+    bool addAttribute(SpanAttribute attribute) noexcept
+    {
+        return span.addAttribute(std::move(attribute));
+    }
+
+    bool addAttribute(std::string_view name, UInt64 value) noexcept
+    {
+        return span.addAttribute(name, value);
+    }
+
+    bool addAttribute(std::string_view name, std::string_view value) noexcept
+    {
+        return span.addAttribute(name, value);
+    }
+
+    /// Emit the span to the span log. Only the first call emits, later calls are no-ops.
+    void finish() noexcept;
+
+private:
+    Span span;
+
+    /// The span log captured at construction: by the time the span is finished, the ambient
+    /// context of the finishing thread may belong to an unrelated trace or to none at all.
+    std::weak_ptr<OpenTelemetrySpanLog> span_log_table;
+};
+
 }
 
 inline WriteBuffer & operator<<(WriteBuffer & buf, const OpenTelemetry::TracingContext & context)

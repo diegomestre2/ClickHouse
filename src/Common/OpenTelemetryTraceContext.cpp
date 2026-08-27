@@ -248,6 +248,65 @@ SpanHolder::~SpanHolder()
     finish(std::chrono::system_clock::now());
 }
 
+ManualSpan::ManualSpan(std::string_view operation_name, SpanKind kind)
+{
+    /// Use try-catch to make sure the ctor is exception safe.
+    try
+    {
+        const TracingContextOnThread & trace_context = CurrentContext();
+        if (!trace_context.isTraceEnabled())
+            return;
+
+        span.trace_id = trace_context.trace_id;
+        span.parent_span_id = trace_context.span_id;
+        span.span_id = TracingContext::generateSpanId();
+        span.operation_name = operation_name;
+        span.kind = kind;
+        span.start_time_us
+            = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+        span.addAttribute("clickhouse.thread_id", getThreadId());
+        span_log = trace_context.span_log;
+    }
+    catch (...)
+    {
+        tryLogCurrentException(__FUNCTION__);
+
+        /// Clear related fields to make sure the span won't be recorded.
+        span.trace_id = UUID();
+    }
+}
+
+void ManualSpan::finish() noexcept
+{
+    if (!span.isTraceEnabled())
+        return;
+
+    try
+    {
+        /// The log might be disabled or already shut down, check it before use.
+        if (auto log = span_log.lock())
+        {
+            span.finish_time_us
+                = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+            log->add([&](OpenTelemetrySpanLogElement & element)
+            {
+                element.span = span;
+            });
+        }
+    }
+    catch (...)
+    {
+        tryLogCurrentException(__FUNCTION__);
+    }
+
+    span.trace_id = UUID();
+}
+
+ManualSpan::~ManualSpan()
+{
+    finish();
+}
+
 bool TracingContext::parseTraceparentHeader(std::string_view traceparent, String & error)
 {
     trace_id = 0;
