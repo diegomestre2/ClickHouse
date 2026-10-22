@@ -18,7 +18,11 @@ struct FragmentGraph;
 /// of a fragment are surrounded by a frame titled `F<id> · <stage name>`; and every exchange is an edge from the send
 /// step of the producer up to the matching receive step of the consumer, labelled with the exchange name and kind,
 /// its mode and its buckets (`│` for a streaming exchange, `╎` for a persisted one). Each fragment is drawn under the
-/// fragment that reads it. The drawing is followed by the `Exchanges` and `Levels` sections of
+/// fragment that reads it, except the fragment that fills an `IN`-subquery set: it is drawn to the right of the fragment
+/// that reads it, with an edge labelled `set_N · set values` into the step that reads the set (`◄`); the sets of one
+/// fragment are drawn one under another. A reader that gets no edge (another fragment that reads the set, or a step with
+/// a box of its fragment to its right) gets the note `← F<id>` instead. A set built while the query was planned, with no
+/// plan left, is one `(no plan)` box. The drawing is followed by the `Exchanges` and `Levels` sections of
 /// `fragments = 1`. Step texts are cut at 40 columns and the first label line at 48; the picture has no other width
 /// limit.
 void explainFragmentGraphTree(

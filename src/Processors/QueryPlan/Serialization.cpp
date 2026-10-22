@@ -141,6 +141,23 @@ std::vector<FutureSetPtr> QueryPlan::collectSerializedSets() const
     return sets;
 }
 
+std::vector<FutureSetPtr> collectSerializedSetsOfStep(const IQueryPlanStep & step)
+{
+    NullWriteBuffer out;
+    SerializedSetsRegistry registry;
+    IQueryPlanStep::Serialization ctx{out, registry};
+    ctx.version = DBMS_QUERY_PLAN_SERIALIZATION_VERSION;
+    ctx.step_version = QueryPlanStepRegistry::instance().versionToWrite(step.getSerializationName(), ctx.version);
+    step.serialize(ctx);
+    out.finalize();
+
+    std::vector<FutureSetPtr> sets;
+    sets.reserve(registry.sets.size());
+    for (const auto & [hash, set] : registry.sets)
+        sets.push_back(set);
+    return sets;
+}
+
 void QueryPlan::serializeSteps(WriteBuffer & out, const SerializationFlags & flags, SerializedSetsRegistry & registry) const
 {
     struct Frame

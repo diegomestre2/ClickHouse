@@ -9,6 +9,8 @@ namespace DB
 
 struct SerializedSetsRegistry;
 struct DeserializedSetsRegistry;
+class FutureSet;
+using FutureSetPtr = std::shared_ptr<FutureSet>;
 
 /// Serialization context passed to `IQueryPlanStep::serialize`.
 /// Settings are handled separately via `serializeSettings` method.
@@ -79,5 +81,9 @@ struct IQueryPlanStep::Deserialization
     /// callbacks) may read their bytes but build a lightweight placeholder instead of a real step.
     bool skipping = false;
 };
+
+/// The sets that a step registers when it is serialized: for a step of a fragment of a distributed plan, the sets that
+/// the tasks of the fragment carry for it. The step is serialized to a buffer that discards the bytes.
+std::vector<FutureSetPtr> collectSerializedSetsOfStep(const IQueryPlanStep & step);
 
 }
