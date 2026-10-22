@@ -1,0 +1,255 @@
+-- IN in WHERE, distributed subquery
+Query fragment 2 (main) · tasks=1
+GatherSend (final_result)
+  GatherReceive (exchange_1)
+
+Query fragment 1 (stage_1) · tasks=3
+GatherSend (exchange_1)
+  Expression ((Project names + Projection))
+    MergingAggregated (merge)
+      ShuffleReceive (exchange_0)
+
+Query fragment 0 (stage_0) · tasks=3
+ShuffleSend (exchange_0)
+  Aggregating (partial)
+    Expression (Before GROUP BY)
+      Filter ((WHERE + Change column names to column identifiers))
+        ReadFromMergeTree (default.big)
+
+Query fragment 4 (set: (SELECT __table1.sid AS sid FROM default.small AS __table1 WHERE __table1.s = 1)) · single node · tasks=1
+CreatingSet (Create set for subquery)
+  GatherReceive (final_result)
+
+Query fragment 3 (main of set F4) · tasks=1
+GatherSend (final_result)
+  Distinct
+    Expression ((Project names + Projection))
+      Filter ((WHERE + Change column names to column identifiers))
+        ReadFromMergeTree (default.small)
+
+Exchanges:
+  exchange_0: hash(modulo(__table1.b, 10_UInt8)), streaming, F0 -> F1, buckets 3 -> 3
+  exchange_1: gather, streaming, F1 -> F2, buckets 3 -> 1
+  set_0: set values, F4 -> F0
+  final_result of set F4: gather, streaming, F3 -> F4, buckets 1 -> 1
+Levels: [F3] -> [F4] -> [F0] -> [F1] -> [F2]
+-- IN as a value
+Query fragment 2 (main) · tasks=1
+Output: b IN subquery1, count()
+
+GatherSend (final_result)
+└──GatherReceive (exchange_1)
+
+Query fragment 1 (stage_1) · tasks=3
+Output: b IN subquery1, count()
+
+GatherSend (exchange_1)
+└──Expression ((Project names + Projection))
+   └──MergingAggregated (merge)
+      └──ShuffleReceive (exchange_0)
+
+Query fragment 0 (stage_0) · tasks=3
+Output: b IN subquery1, count()
+
+ShuffleSend (exchange_0)
+└──Aggregating (partial)
+   └──Expression ((Before GROUP BY + Change column names to column identifiers))
+      └──ReadFromMergeTree (default.big)
+
+Query fragment 4 (set: subquery1) · single node · tasks=1
+Output: Empty
+
+CreatingSet (Create set for subquery)
+└──GatherReceive (final_result)
+
+Query fragment 3 (main of set F4) · tasks=1
+Output: sid
+
+GatherSend (final_result)
+└──Distinct
+   └──Expression ((Project names + Projection))
+      └──Filter ((WHERE + Change column names to column identifiers))
+         └──ReadFromMergeTree (default.small)
+
+Exchanges:
+  exchange_0: hash(b IN subquery1), streaming, F0 -> F1, buckets 3 -> 3
+  exchange_1: gather, streaming, F1 -> F2, buckets 3 -> 1
+  set_0: set values, F4 -> F0
+  final_result of set F4: gather, streaming, F3 -> F4, buckets 1 -> 1
+Levels: [F3] -> [F4] -> [F0] -> [F1] -> [F2]
+-- one set read by both sides of a join
+Query fragment 3 (main) · tasks=1
+GatherSend (final_result)
+  Expression ((Project names + Projection))
+    MergingAggregated (merge)
+      GatherReceive (exchange_2)
+
+Query fragment 2 (stage_2) · tasks=3
+GatherSend (exchange_2)
+  Aggregating (partial)
+    Expression ((Before GROUP BY + ))
+      JoinLogical
+        ShuffleReceive (exchange_0)
+        ShuffleReceive (exchange_1)
+
+Query fragment 1 (stage_1) · tasks=3
+ShuffleSend (exchange_1)
+  Filter ((WHERE + Change column names to column identifiers))
+    ReadFromMergeTree (default.small)
+
+Query fragment 0 (stage_0) · tasks=3
+ShuffleSend (exchange_0)
+  Filter ((WHERE + Change column names to column identifiers))
+    ReadFromMergeTree (default.big)
+
+Query fragment 6 (set: (SELECT __table1.sid AS sid FROM default.small AS __table1 WHERE __table1.s = 1)) · single node · tasks=1
+CreatingSet (Create set for subquery)
+  GatherReceive (final_result)
+
+Query fragment 5 (main of set F6) · tasks=1
+GatherSend (final_result)
+  Distinct
+    GatherReceive (exchange_0)
+
+Query fragment 4 (stage_0 of set F6) · tasks=3
+GatherSend (exchange_0)
+  Expression ((Project names + Projection))
+    Filter ((WHERE + Change column names to column identifiers))
+      ReadFromMergeTree (default.small)
+
+Exchanges:
+  exchange_0: hash(__table1.b), streaming, F0 -> F2, buckets 3 -> 3
+  exchange_1: hash(__table2.sid), streaming, F1 -> F2, buckets 3 -> 3
+  exchange_2: gather, streaming, F2 -> F3, buckets 3 -> 1
+  set_0: set values, F6 -> F0
+  set_0: set values, F6 -> F1
+  exchange_0 of set F6: gather, streaming, F4 -> F5, buckets 3 -> 1
+  final_result of set F6: gather, streaming, F5 -> F6, buckets 1 -> 1
+Levels: [F4] -> [F5] -> [F6] -> [F0, F1] -> [F2] -> [F3]
+-- IN inside the subquery
+Query fragment 1 (main) · tasks=1
+GatherSend (final_result)
+  Expression ((Project names + Projection))
+    MergingAggregated (merge)
+      GatherReceive (exchange_0)
+
+Query fragment 0 (stage_0) · tasks=3
+GatherSend (exchange_0)
+  Aggregating (partial)
+    Expression (Before GROUP BY)
+      Filter ((WHERE + Change column names to column identifiers))
+        ReadFromMergeTree (default.big)
+
+Query fragment 3 (set: (SELECT __table1.sid AS sid FROM default.small AS __table1 WHERE __table1.s IN (SELECT __table1.sid AS sid FROM default.small AS __table1 WHERE __table1.sid < 3))) · single node · tasks=1
+CreatingSet (Create set for subquery)
+  GatherReceive (final_result)
+
+Query fragment 2 (main of set F3) · tasks=1
+GatherSend (final_result)
+  Distinct
+    Expression ((Project names + Projection))
+      Filter ((WHERE + Change column names to column identifiers))
+        ReadFromMergeTree (default.small)
+
+Query fragment 5 (set: (SELECT __table1.sid AS sid FROM default.small AS __table1 WHERE __table1.sid < 3)) · single node · tasks=1
+CreatingSet (Create set for subquery)
+  GatherReceive (final_result)
+
+Query fragment 4 (main of set F5) · tasks=1
+GatherSend (final_result)
+  Distinct
+    Expression ((Project names + Projection))
+      Filter ((WHERE + Change column names to column identifiers))
+        ReadFromMergeTree (default.small)
+
+Exchanges:
+  exchange_0: gather, streaming, F0 -> F1, buckets 3 -> 1
+  set_0: set values, F3 -> F0
+  final_result of set F3: gather, streaming, F2 -> F3, buckets 1 -> 1
+  set_1: set values, F5 -> F2
+  final_result of set F5: gather, streaming, F4 -> F5, buckets 1 -> 1
+Levels: [F4] -> [F5] -> [F2] -> [F3] -> [F0] -> [F1]
+-- the subquery is not distributed
+Query fragment 1 (main) · tasks=1
+GatherSend (final_result)
+  Expression ((Project names + Projection))
+    MergingAggregated (merge)
+      GatherReceive (exchange_0)
+
+Query fragment 0 (stage_0) · tasks=3
+GatherSend (exchange_0)
+  Aggregating (partial)
+    Expression (Before GROUP BY)
+      Filter ((WHERE + Change column names to column identifiers))
+        ReadFromMergeTree (default.big)
+
+Query fragment 2 (set: (SELECT __table1.sid AS sid FROM default.small AS __table1 GROUP BY __table1.sid WITH TOTALS)) · single node · tasks=1
+Not distributed: make_distributed_plan does not support WITH TOTALS
+CreatingSet (Create set for subquery)
+  Expression ((Project names + Projection))
+    TotalsHaving
+      Aggregating
+        Expression ((Before GROUP BY + Change column names to column identifiers))
+          ReadFromMergeTree (default.small)
+
+Exchanges:
+  exchange_0: gather, streaming, F0 -> F1, buckets 3 -> 1
+  set_0: set values, F2 -> F0
+Levels: [F2] -> [F0] -> [F1]
+-- pretty
+Query fragment 1 (main) · tasks=1
+Output: count()
+
+GatherSend (final_result)
+└──Expression ((Project names + Projection))
+   └──MergingAggregated (merge)
+      └──GatherReceive (exchange_0)
+
+Query fragment 0 (stage_0) · tasks=3
+Output: count()
+
+GatherSend (exchange_0)
+└──Aggregating (partial)
+   └──Expression (Before GROUP BY)
+      └──Filter ((WHERE + Change column names to column identifiers))
+         └──ReadFromMergeTree (default.big)
+
+Query fragment 3 (set: subquery1) · single node · tasks=1
+Output: Empty
+
+CreatingSet (Create set for subquery)
+└──GatherReceive (final_result)
+
+Query fragment 2 (main of set F3) · tasks=1
+Output: sid
+
+GatherSend (final_result)
+└──Distinct
+   └──Expression ((Project names + Projection))
+      └──Filter ((WHERE + Change column names to column identifiers))
+         └──ReadFromMergeTree (default.small)
+
+Exchanges:
+  exchange_0: gather, streaming, F0 -> F1, buckets 3 -> 1
+  set_0: set values, F3 -> F0
+  final_result of set F3: gather, streaming, F2 -> F3, buckets 1 -> 1
+Levels: [F2] -> [F3] -> [F0] -> [F1]
+-- a set in PREWHERE is built while the query is planned
+Query fragment 1 (main) · tasks=1
+GatherSend (final_result)
+  Expression ((Project names + Projection))
+    MergingAggregated (merge)
+      GatherReceive (exchange_0)
+
+Query fragment 0 (stage_0) · tasks=3
+GatherSend (exchange_0)
+  Aggregating (partial)
+    Expression ((Before GROUP BY + Change column names to column identifiers))
+      ReadFromMergeTree (default.big)
+
+Query fragment 2 (set: (SELECT __table1.sid AS sid FROM default.small AS __table1 WHERE __table1.s = 1)) · single node · tasks=1 · built during planning
+
+Exchanges:
+  exchange_0: gather, streaming, F0 -> F1, buckets 3 -> 1
+  set_0: set values, F2 -> F0
+Levels: [F2] -> [F0] -> [F1]

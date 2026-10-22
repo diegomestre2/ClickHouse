@@ -57,6 +57,8 @@ namespace JSONBuilder
 struct QueryPlanAndSets;
 struct SerializedSetsRegistry;
 struct DeserializedSetsRegistry;
+class FutureSet;
+using FutureSetPtr = std::shared_ptr<FutureSet>;
 
 class SettingsChanges;
 
@@ -154,6 +156,10 @@ public:
 
     /// Check if already serialized
     bool isSerialized() const;
+
+    /// The sets the steps of this plan reference, as its serialization collects them: for a fragment of a distributed
+    /// plan, the sets that its tasks carry. Only the steps are serialized, to a buffer that discards the bytes.
+    std::vector<FutureSetPtr> collectSerializedSets() const;
 
     void resolveStorages(const ContextPtr & context);
 
@@ -291,6 +297,8 @@ private:
     };
 
     void serialize(WriteBuffer & out, const SerializationFlags & flags) const;
+    /// Writes the steps and registers the sets they reference, without the sets.
+    void serializeSteps(WriteBuffer & out, const SerializationFlags & flags, SerializedSetsRegistry & registry) const;
     static QueryPlanAndSets deserialize(ReadBuffer & in, const ContextPtr & context, const SerializationFlags & flags, size_t max_type_complexity);
 
     static void serializeSets(SerializedSetsRegistry & registry, WriteBuffer & out, const QueryPlan::SerializationFlags & flags);

@@ -89,7 +89,8 @@ FROM
     FROM (SELECT bid FROM big WHERE bid IN (SELECT sid FROM small WHERE sid < 10)) AS a,
          (SELECT sid FROM small WHERE sid IN (SELECT bid FROM big WHERE bid > 990)) AS s
     WHERE s.sid = a.bid
-    SETTINGS enable_join_runtime_filters = 0
+    -- The sets are built at execution, not for the primary key or `PREWHERE` while the query is planned.
+    SETTINGS enable_join_runtime_filters = 0, use_index_for_in_with_subqueries = 0, optimize_move_to_prewhere = 0
 )
 WHERE explain LIKE 'Query fragment%' OR explain LIKE '%subquery%';
 

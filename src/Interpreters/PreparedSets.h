@@ -236,6 +236,14 @@ public:
 
     void buildSetInplace(const ContextPtr & context);
 
+    /// For `EXPLAIN` of a distributed plan, which shows how the set is built without building it.
+    /// Whether the subquery has correlated expressions: such a set is not prepared for a distributed plan.
+    bool hasCorrelatedSource() const;
+    /// Takes the plan of the subquery out of the set; the set cannot be built afterwards.
+    std::unique_ptr<QueryPlan> detachQueryPlan() { return std::move(source); }
+    /// Completes `plan` with the step that fills this set from it, as `build` completes the plan of the subquery.
+    void addCreatingSetStep(QueryPlan & plan, const SizeLimits & network_transfer_limits) const;
+
     const QueryTreeNodePtr & getQueryTree() const { return query_tree; }
     QueryTreeNodePtr detachQueryTree() { return std::move(query_tree); }
     void setQueryPlan(std::unique_ptr<QueryPlan> source_);
@@ -252,6 +260,9 @@ public:
     bool hasExternalTable() const;
 
 private:
+    void addCreatingSetStep(
+        QueryPlan & plan, const SizeLimits & network_transfer_limits, const PreparedSetsCachePtr & prepared_sets_cache, bool recoverable_build) const;
+
     Hash hash;
     ASTPtr ast;
     /// The set and the step that fills it are made with these settings.

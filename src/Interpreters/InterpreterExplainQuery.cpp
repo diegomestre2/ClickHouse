@@ -1241,9 +1241,12 @@ QueryPipeline InterpreterExplainQuery::executeImpl()
                     {
                         /// The cut consumes the plan. That is intended: `EXPLAIN` owns this plan and discards it
                         /// after printing. The plan is not cloned, because not every step implements `clone`.
-                        /// `cut` must outlive `graph`, whose fragments point to the plans of its stages.
+                        /// `cut` and `sets` must outlive `graph`, whose fragments point to the plans of their stages.
+                        /// The sources of the `IN`-subquery sets are prepared and cut as the execution would do it,
+                        /// which consumes them as well.
                         auto cut = plan.cutIntoDistributedPlan(optimization_settings);
-                        auto graph = buildFragmentGraph(cut.distributed_plan);
+                        auto sets = prepareSetsForExplain(std::move(cut.delayed_sets), optimization_settings, context);
+                        auto graph = buildFragmentGraph(cut, sets);
                         FragmentGraphExplain(graph, settings.query_plan_options, max_step_description_length).explain(buf);
                     }
                     else

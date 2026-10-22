@@ -14,6 +14,7 @@ namespace DB
 class FutureSetFromSubquery;
 using FutureSetFromSubqueryPtr = std::shared_ptr<FutureSetFromSubquery>;
 class DelayedCreatingSetsStep;
+struct QueryPlanOptimizationSettings;
 
 /// Handling of `IN`-subquery sets for a distributed query plan (`make_distributed_plan`).
 /// The sets are built once on the initiator and their values ship with the worker tasks;
@@ -34,5 +35,48 @@ std::vector<FutureSetFromSubqueryPtr> extractSetsForDistributedPlan(QueryPlan::N
 /// while the set itself is still filled on the initiator. A source that collapses to a single
 /// stage, or that has a step that cannot be serialized, keeps running locally.
 void convertSetSourceForDistributedPlan(QueryPlan & source_plan, const ContextPtr & context);
+
+/// The first part of `convertSetSourceForDistributedPlan`: appends the `DISTINCT`, makes the
+/// distributed-plan decision for the source and optimizes it. Returns true when the source runs as
+/// a distributed plan; `optimization_settings`, made from `context` by the caller, are then the
+/// settings to convert or cut it with. Otherwise the set is built from a local plan, and
+/// `fallback_reason`, when given, is set to the reason the source was rejected, if it was.
+bool prepareSetSourceForDistributedPlan(
+    QueryPlan & source_plan,
+    const ContextPtr & context,
+    QueryPlanOptimizationSettings & optimization_settings,
+    std::optional<String> * fallback_reason);
+
+/// An `IN`-subquery set of a distributed plan as `EXPLAIN` shows it: its source is prepared and cut
+/// as the execution of the query would do it, but the set is not built.
+struct SetForExplain
+{
+    FutureSetFromSubqueryPtr set;
+    /// The subquery the set is filled from, e.g. `(SELECT k FROM small)`.
+    String description;
+    /// The plan of the fragment that fills the set on the initiator: `CreatingSet` over the receive of the result
+    /// of `cut` when the source is distributed, or over the whole source plan when it is not. Empty for a set built
+    /// while the query was planned by a build that consumed the plan of the subquery.
+    QueryPlan plan;
+    /// The source is distributed: its stages. `cut->delayed_sets` is empty; its sets are in `sets`.
+    std::unique_ptr<DistributedPlanCut> cut;
+    /// The source plan the cut consumed: empty, it keeps the resources of the stages (e.g. the locks of the tables).
+    std::unique_ptr<QueryPlan> cut_source;
+    /// The source is not distributed: why it was rejected, if it was.
+    std::optional<String> fallback_reason;
+    /// The set was already filled while the query was planned (e.g. for the analysis of a primary key),
+    /// so the execution of the query does not fill it again.
+    bool built_during_planning = false;
+    /// The sets of a distributed source.
+    std::vector<SetForExplain> sets;
+};
+
+/// Prepares the sets taken out of a distributed plan by `QueryPlan::cutIntoDistributedPlan` for `EXPLAIN`,
+/// recursively for the sets of their sources. Consumes the source plans of the sets: the sets cannot be built
+/// afterwards. A set whose source has correlated expressions is not built as a set at all, so it is left out.
+std::vector<SetForExplain> prepareSetsForExplain(
+    std::vector<FutureSetFromSubqueryPtr> sets,
+    const QueryPlanOptimizationSettings & optimization_settings,
+    const ContextPtr & context);
 
 }

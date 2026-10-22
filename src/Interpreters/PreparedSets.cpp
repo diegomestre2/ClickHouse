@@ -420,16 +420,32 @@ std::unique_ptr<QueryPlan> FutureSetFromSubquery::build(
     if (!plan)
         return nullptr;
 
+    addCreatingSetStep(*plan, network_transfer_limits, prepared_sets_cache, recoverable_build);
+    return plan;
+}
+
+void FutureSetFromSubquery::addCreatingSetStep(
+    QueryPlan & plan, const SizeLimits & network_transfer_limits, const PreparedSetsCachePtr & prepared_sets_cache, bool recoverable_build) const
+{
     auto creating_set = std::make_unique<CreatingSetStep>(
-        plan->getCurrentHeader(),
+        plan.getCurrentHeader(),
         set_and_key,
         network_transfer_limits,
         prepared_sets_cache,
         set_settings,
         recoverable_build);
     creating_set->setStepDescription("Create set for subquery");
-    plan->addStep(std::move(creating_set));
-    return plan;
+    plan.addStep(std::move(creating_set));
+}
+
+void FutureSetFromSubquery::addCreatingSetStep(QueryPlan & plan, const SizeLimits & network_transfer_limits) const
+{
+    addCreatingSetStep(plan, network_transfer_limits, /*prepared_sets_cache=*/ nullptr, /*recoverable_build=*/ false);
+}
+
+bool FutureSetFromSubquery::hasCorrelatedSource() const
+{
+    return source && hasCorrelatedExpressions(source->getRootNode());
 }
 
 void FutureSetFromSubquery::prepareForDistributedPlan(const ContextPtr & context)

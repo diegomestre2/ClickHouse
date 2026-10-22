@@ -1,5 +1,6 @@
 #include <Processors/QueryPlan/Fragments/FragmentGraph.h>
 
+#include <Interpreters/PreparedSets.h>
 #include <Processors/QueryPlan/BroadcastReceiveStep.h>
 #include <Processors/QueryPlan/BroadcastSendStep.h>
 #include <Processors/QueryPlan/GatherReceiveStep.h>
@@ -9,8 +10,11 @@
 #include <Common/Exception.h>
 #include <Common/typeid_cast.h>
 
+#include <fmt/format.h>
+
 #include <algorithm>
 #include <cmath>
+#include <unordered_set>
 
 namespace DB
 {
@@ -200,70 +204,224 @@ std::vector<std::vector<UInt32>> computeLevels(const FragmentGraph & graph)
     return levels;
 }
 
-FragmentGraph buildFragmentGraph(const DistributedQueryPlan & distributed_plan)
+namespace
 {
-    FragmentGraph graph;
 
-    /// The graph is the data flow of the query. The merge stages of runtime filters (`filter_only`, added by
-    /// `wireRuntimeFilterExchangeTopology`) produce no query data and are not cut from the plan, so they and the
-    /// dependencies on either side of them are left out. The steps that build and apply the filters stay in the plans
-    /// of the data fragments.
-    for (const auto & [stage_name, stage] : distributed_plan.stages)
+/// Builds a graph from the cut of the query and from the cuts of the sources of its sets, which number their stages and
+/// exchanges from 0 each: the ids of every cut after the first are shifted past the ids taken so far.
+class FragmentGraphBuilder
+{
+public:
+    FragmentGraph build(const DistributedQueryPlan & distributed_plan, const std::vector<SetForExplain> & sets)
     {
-        if (stage.filter_only)
-            continue;
+        auto readers = addCut(distributed_plan, /*set_fragment=*/ std::nullopt);
+        addSets(sets, readers);
 
-        checkNotEmpty(stage.query_plan_fragment, stage_name);
-        graph.fragments.push_back(QueryFragment{
-            .id = stage.id,
-            .stage_name = stage_name,
-            .execution_mode = QueryFragment::ExecutionMode::Distributed,
-            .fallback_reason = {},
-            .description = {},
-            .tasks = stage.tasks.size(),
-            .plan = &stage.query_plan_fragment,
-        });
+        /// The fragment that fills a set gets its id after the stages of its source, but is added before them.
+        std::sort(graph.fragments.begin(), graph.fragments.end(), [](const auto & lhs, const auto & rhs) { return lhs.id < rhs.id; });
+        std::sort(graph.exchanges.begin(), graph.exchanges.end(), [](const auto & lhs, const auto & rhs) { return lhs.id < rhs.id; });
+        validateFragmentGraph(graph);
+        return std::move(graph);
     }
-    /// `stages` and `stage_depends_on` are unordered maps: sort for a deterministic order and for the lookups by id.
-    /// Duplicate ids are left to `validateFragmentGraph`.
-    std::sort(graph.fragments.begin(), graph.fragments.end(), [](const auto & lhs, const auto & rhs) { return lhs.id < rhs.id; });
 
-    for (const auto & [consumer_stage, producers] : distributed_plan.stage_depends_on)
+private:
+    FragmentGraph graph;
+    UInt32 fragment_offset = 0;
+    UInt32 exchange_offset = 0;
+    size_t num_sets = 0;
+
+    /// The fragments of one cut that may read the sets taken out of it, by id, with the plan of each.
+    using Readers = std::vector<std::pair<UInt32, const QueryPlan *>>;
+
+    static UInt32 getMainStageId(const DistributedQueryPlan & distributed_plan)
     {
-        const auto & consumer_stage_description = findStage(distributed_plan, consumer_stage);
-        if (consumer_stage_description.filter_only)
-            continue;
-        UInt32 consumer_id = consumer_stage_description.id;
-        for (const auto & [producer_stage, exchange_name] : producers)
+        return findStage(distributed_plan, String(main_stage_name)).id;
+    }
+
+    /// Adds the stages of a cut and the exchanges between them, with the ids shifted by the current offsets, and moves
+    /// the offsets past the ids of the cut. A stage id is at most the id of `main`, and an exchange id is the id of
+    /// the stage that sends to it.
+    Readers addCut(const DistributedQueryPlan & distributed_plan, std::optional<UInt32> set_fragment)
+    {
+        const UInt32 main_id = getMainStageId(distributed_plan);
+        Readers readers;
+
+        /// The graph is the data flow of the query. The merge stages of runtime filters (`filter_only`, added by
+        /// `wireRuntimeFilterExchangeTopology`) produce no query data and are not cut from the plan, so they and the
+        /// dependencies on either side of them are left out. The steps that build and apply the filters stay in the
+        /// plans of the data fragments.
+        for (const auto & [stage_name, stage] : distributed_plan.stages)
         {
-            const auto & producer_stage_description = findStage(distributed_plan, producer_stage);
-            if (producer_stage_description.filter_only)
+            if (stage.filter_only)
                 continue;
-            UInt32 producer_id = producer_stage_description.id;
-            const auto & description = findDescription(distributed_plan, exchange_name);
 
-            const auto kind = getExchangeKind(description);
-
-            graph.exchanges.push_back(FragmentExchange{
-                .id = description.id,
-                .name = description.name,
-                .from = producer_id,
-                .to = consumer_id,
-                .kind = kind,
-                .keys = kind == FragmentExchange::Kind::Hash ? description.keys : Names{},
-                .merge_sort = kind == FragmentExchange::Kind::Gather ? description.sort_description : std::nullopt,
-                .mode = description.kind,
-                .source_buckets = description.source_bucket_count,
-                .destination_buckets = description.destination_bucket_count,
-                .statistics = {.estimated_rows = getEstimatedRows(*graph.getFragment(producer_id).plan)},
+            checkNotEmpty(stage.query_plan_fragment, stage_name);
+            graph.fragments.push_back(QueryFragment{
+                .id = fragment_offset + stage.id,
+                .stage_name = stage_name,
+                .execution_mode = QueryFragment::ExecutionMode::Distributed,
+                .fallback_reason = {},
+                .description = {},
+                .set_name = {},
+                .set_fragment = set_fragment,
+                .built_during_planning = false,
+                .tasks = stage.tasks.size(),
+                .plan = &stage.query_plan_fragment,
             });
+            readers.emplace_back(fragment_offset + stage.id, &stage.query_plan_fragment);
+        }
+        /// `stages` is an unordered map: sort for a deterministic order of the `SetValues` exchanges.
+        std::sort(readers.begin(), readers.end());
+
+        for (const auto & [consumer_stage, producers] : distributed_plan.stage_depends_on)
+        {
+            const auto & consumer_stage_description = findStage(distributed_plan, consumer_stage);
+            if (consumer_stage_description.filter_only)
+                continue;
+            for (const auto & [producer_stage, exchange_name] : producers)
+            {
+                const auto & producer_stage_description = findStage(distributed_plan, producer_stage);
+                if (producer_stage_description.filter_only)
+                    continue;
+                const auto & description = findDescription(distributed_plan, exchange_name);
+                const auto kind = getExchangeKind(description);
+
+                graph.exchanges.push_back(FragmentExchange{
+                    .id = exchange_offset + description.id,
+                    .name = description.name,
+                    .set_fragment = set_fragment,
+                    .from = fragment_offset + producer_stage_description.id,
+                    .to = fragment_offset + consumer_stage_description.id,
+                    .kind = kind,
+                    .keys = kind == FragmentExchange::Kind::Hash ? description.keys : Names{},
+                    .merge_sort = kind == FragmentExchange::Kind::Gather ? description.sort_description : std::nullopt,
+                    .mode = description.kind,
+                    .source_buckets = description.source_bucket_count,
+                    .destination_buckets = description.destination_bucket_count,
+                    .statistics = {.estimated_rows = getEstimatedRows(producer_stage_description.query_plan_fragment)},
+                });
+            }
+        }
+
+        fragment_offset += main_id + 1;
+        exchange_offset += main_id + 1;
+        return readers;
+    }
+
+    void addSets(const std::vector<SetForExplain> & sets, const Readers & readers)
+    {
+        if (sets.empty())
+            return;
+
+        /// The sets that the tasks of each reader carry, by hash.
+        std::vector<std::unordered_set<FutureSet::Hash, FutureSetHashing>> sets_of_readers;
+        sets_of_readers.reserve(readers.size());
+        for (const auto & [id, plan] : readers)
+        {
+            auto & reader_sets = sets_of_readers.emplace_back();
+            for (const auto & future_set : plan->collectSerializedSets())
+                if (typeid_cast<const FutureSetFromSubquery *>(future_set.get()))
+                    reader_sets.insert(future_set->getHash());
+        }
+
+        /// Every set a reader carries must be filled by one of the fragments: a missing one would be an edge silently
+        /// left out of the graph.
+        std::unordered_set<FutureSet::Hash, FutureSetHashing> known_sets;
+        for (const auto & set : sets)
+            known_sets.insert(set.set->getHash());
+        for (size_t i = 0; i < readers.size(); ++i)
+            for (const auto & hash : sets_of_readers[i])
+                if (!known_sets.contains(hash))
+                    throw Exception(ErrorCodes::LOGICAL_ERROR,
+                        "Fragment {} carries an IN-subquery set with hash {}_{}, which no fragment of the graph fills",
+                        readers[i].first, hash.low64, hash.high64);
+
+        for (const auto & set : sets)
+        {
+            const String name = fmt::format("set_{}", num_sets++);
+
+            /// The fragment that fills the set follows the stages of its source, if the source is distributed.
+            const UInt32 set_fragment_id = fragment_offset + (set.cut ? getMainStageId(set.cut->distributed_plan) + 1 : 0);
+            graph.fragments.push_back(QueryFragment{
+                .id = set_fragment_id,
+                .stage_name = name,
+                .execution_mode = QueryFragment::ExecutionMode::SingleNode,
+                .fallback_reason = set.fallback_reason,
+                .description = set.description,
+                .set_name = PreparedSets::toString(set.set->getHash(), {}),
+                .set_fragment = {},
+                .built_during_planning = set.built_during_planning,
+                .tasks = 1,
+                .plan = set.plan.isInitialized() ? &set.plan : nullptr,
+            });
+
+            const auto hash = set.set->getHash();
+            for (size_t i = 0; i < readers.size(); ++i)
+            {
+                if (!sets_of_readers[i].contains(hash))
+                    continue;
+                graph.exchanges.push_back(FragmentExchange{
+                    .id = exchange_offset++,
+                    .name = name,
+                    .set_fragment = {},
+                    .from = set_fragment_id,
+                    .to = readers[i].first,
+                    .kind = FragmentExchange::Kind::SetValues,
+                    .keys = {},
+                    .merge_sort = {},
+                    .mode = ExchangeDescription::Kind::Persisted,
+                    .source_buckets = 0,
+                    .destination_buckets = 0,
+                    .statistics = {},
+                });
+            }
+
+            if (!set.cut)
+            {
+                fragment_offset = set_fragment_id + 1;
+                continue;
+            }
+
+            const auto & set_cut = *set.cut;
+            const UInt32 source_fragment_offset = fragment_offset;
+            const UInt32 source_exchange_offset = exchange_offset;
+            auto source_readers = addCut(set_cut.distributed_plan, set_fragment_id);
+
+            /// The `main` stage of the source sends its result to the initiator, which fills the set from it.
+            const UInt32 main_id = getMainStageId(set_cut.distributed_plan);
+            const auto & final_result = set_cut.final_result_exchange;
+            graph.exchanges.push_back(FragmentExchange{
+                .id = source_exchange_offset + final_result.id,
+                .name = final_result.name,
+                .set_fragment = set_fragment_id,
+                .from = source_fragment_offset + main_id,
+                .to = set_fragment_id,
+                .kind = FragmentExchange::Kind::Gather,
+                .keys = {},
+                .merge_sort = {},
+                .mode = final_result.kind,
+                .source_buckets = final_result.source_bucket_count,
+                .destination_buckets = final_result.destination_bucket_count,
+                .statistics = {.estimated_rows = getEstimatedRows(findStage(set_cut.distributed_plan, String(main_stage_name)).query_plan_fragment)},
+            });
+
+            /// `addCut` moved the offset past `main`, which is where the fragment that fills the set is.
+            fragment_offset = set_fragment_id + 1;
+            addSets(set.sets, source_readers);
         }
     }
+};
 
-    std::sort(graph.exchanges.begin(), graph.exchanges.end(), [](const auto & lhs, const auto & rhs) { return lhs.id < rhs.id; });
+}
 
-    validateFragmentGraph(graph);
-    return graph;
+FragmentGraph buildFragmentGraph(const DistributedQueryPlan & distributed_plan)
+{
+    return FragmentGraphBuilder().build(distributed_plan, /*sets=*/ {});
+}
+
+FragmentGraph buildFragmentGraph(const DistributedPlanCut & cut, const std::vector<SetForExplain> & sets)
+{
+    return FragmentGraphBuilder().build(cut.distributed_plan, sets);
 }
 
 FragmentGraph buildSingleFragmentGraph(const QueryPlan & plan, std::optional<String> fallback_reason)
@@ -277,6 +435,9 @@ FragmentGraph buildSingleFragmentGraph(const QueryPlan & plan, std::optional<Str
         .execution_mode = QueryFragment::ExecutionMode::SingleNode,
         .fallback_reason = std::move(fallback_reason),
         .description = {},
+        .set_name = {},
+        .set_fragment = {},
+        .built_during_planning = false,
         .tasks = 1,
         .plan = &plan,
     });

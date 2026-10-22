@@ -49,3 +49,13 @@ Query fragment 2 (stage_2) · tasks=3
 Query fragment 1 (stage_1) · tasks=1
 Query fragment 0 (stage_0) · tasks=3
    │  Filter column: bid IN subquery2
+Query fragment 8 (set: subquery1) · single node · tasks=1
+CreatingSet (Create set for subquery)
+│  Set: subquery1
+Query fragment 7 (main of set F8) · tasks=1
+Query fragment 6 (stage_0 of set F8) · tasks=3
+Query fragment 11 (set: subquery2) · single node · tasks=1
+CreatingSet (Create set for subquery)
+│  Set: subquery2
+Query fragment 10 (main of set F11) · tasks=1
+Query fragment 9 (stage_0 of set F11) · tasks=3

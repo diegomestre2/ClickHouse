@@ -3,6 +3,7 @@
 #include <Core/Names.h>
 #include <Core/SortDescription.h>
 #include <Core/Types.h>
+#include <Processors/QueryPlan/DistributedPlanSets.h>
 #include <Processors/QueryPlan/QueryPlan.h>
 
 #include <optional>
@@ -38,9 +39,17 @@ struct QueryFragment
     std::optional<String> fallback_reason;
     /// What the fragment computes when its stage name does not tell, e.g. the set it fills: "k IN (SELECT k FROM small)".
     std::optional<String> description;
+    /// The fragment fills an `IN`-subquery set: the name of the set in the plans that read it (`__set_<hash>`).
+    std::optional<String> set_name;
+    /// A stage of the distributed source of an `IN`-subquery set: the id of the fragment that fills the set. Every set
+    /// source is cut on its own, so its stage names repeat the names of the stages of the query.
+    std::optional<UInt32> set_fragment;
+    /// The fragment fills a set that was already filled while the query was planned, so the execution does not run it.
+    bool built_during_planning = false;
     /// The number of tasks of the stage.
     size_t tasks = 0;
-    /// The plan of the stage (not owned); nullptr in hand-built graphs of tests.
+    /// The plan of the stage (not owned); nullptr in hand-built graphs of tests, and for a set that was built while
+    /// the query was planned by a build that consumed the plan of the subquery.
     const QueryPlan * plan = nullptr;
 };
 
@@ -71,8 +80,10 @@ struct FragmentExchange
 
     /// The exchange id assigned by the cutter, N for `exchange_N`.
     UInt32 id = 0;
-    /// The executor's exchange name, e.g. `exchange_1`, for log and trace joins.
+    /// The executor's exchange name, e.g. `exchange_1`, for log and trace joins; `set_N` for a `SetValues` exchange.
     String name;
+    /// An exchange of the distributed source of an `IN`-subquery set: the id of the fragment that fills the set.
+    std::optional<UInt32> set_fragment;
     /// Producer fragment id.
     UInt32 from = 0;
     /// Consumer fragment id.
@@ -84,7 +95,8 @@ struct FragmentExchange
     std::optional<SortDescription> merge_sort;
     /// The executor's transport. `Streaming`: the data is sent over the network while it is produced; the producer
     /// and the consumer run at the same time. `Persisted`: the data is written to temporary files, and the consumer
-    /// starts only after the producer has finished.
+    /// starts only after the producer has finished. A `SetValues` exchange is `Persisted`: the set is complete
+    /// before any task that reads it starts.
     ExchangeDescription::Kind mode = ExchangeDescription::Kind::Streaming;
     size_t source_buckets = 0;
     size_t destination_buckets = 0;
@@ -108,6 +120,14 @@ struct FragmentGraph
 /// their dependencies are not part of the graph. `distributed_plan` must outlive the graph, because the fragments point
 /// to its plans.
 FragmentGraph buildFragmentGraph(const DistributedQueryPlan & distributed_plan);
+
+/// The same, with the `IN`-subquery sets taken out of the plan by the cut (`prepareSetsForExplain`), recursively.
+/// Every set is a `SingleNode` fragment that fills the set on the initiator, with a `SetValues` exchange to every
+/// fragment whose tasks carry the set. The stages of a distributed set source are `Distributed` fragments with
+/// `set_fragment`; its `final_result` exchange goes to the fragment that fills the set. The ids continue after the
+/// ids of the query, in the order of the sets: for each set its `SetValues` exchanges, then its stages and the
+/// fragment that fills it, with their exchanges, then the sets of its source. `cut` and `sets` must outlive the graph.
+FragmentGraph buildFragmentGraph(const DistributedPlanCut & cut, const std::vector<SetForExplain> & sets);
 
 /// The one-fragment graph of a plan that was not cut (no exchanges, or the planner fell back to a single node).
 /// The fragment has the `SingleNode` execution mode and carries `fallback_reason`.

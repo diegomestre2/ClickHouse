@@ -5,6 +5,7 @@
 #include <Processors/QueryPlan/CreatingSetsStep.h>
 #include <Processors/QueryPlan/MaterializingCTEStep.h>
 
+#include <IO/NullWriteBuffer.h>
 #include <IO/ReadHelpers.h>
 #include <IO/WriteHelpers.h>
 
@@ -118,7 +119,30 @@ void QueryPlan::serialize(WriteBuffer & out, const SerializationFlags & flags) c
     }
 
     SerializedSetsRegistry registry;
+    serializeSteps(out, flags, registry);
+    serializeSets(registry, out, flags);
+}
 
+std::vector<FutureSetPtr> QueryPlan::collectSerializedSets() const
+{
+    checkInitialized();
+
+    NullWriteBuffer out;
+    SerializationFlags flags;
+    flags.version = DBMS_QUERY_PLAN_SERIALIZATION_VERSION;
+    SerializedSetsRegistry registry;
+    serializeSteps(out, flags, registry);
+    out.finalize();
+
+    std::vector<FutureSetPtr> sets;
+    sets.reserve(registry.sets.size());
+    for (const auto & [hash, set] : registry.sets)
+        sets.push_back(set);
+    return sets;
+}
+
+void QueryPlan::serializeSteps(WriteBuffer & out, const SerializationFlags & flags, SerializedSetsRegistry & registry) const
+{
     struct Frame
     {
         Node * node = {};
@@ -183,8 +207,6 @@ void QueryPlan::serialize(WriteBuffer & out, const SerializationFlags & flags) c
         ctx.step_version = step_version;
         node->step->serialize(ctx);
     }
-
-    serializeSets(registry, out, flags);
 }
 
 void QueryPlan::ensureSerialized(size_t max_supported_version) const

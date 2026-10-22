@@ -859,7 +859,7 @@ The fragments are followed by two sections, which refer to query fragment `<id>`
 - `Exchanges` — one line per exchange, with the fragment that sends the data and the fragment that reads it (`F0 -> F2`), and how the data is transferred: by the hash of the keys (`hash(...)`), to every task of the consumer (`broadcast`), into one task (`gather`, with `sorted by` when the sort order is kept) or without regard to the values (`any`); whether it is sent over the network while it is produced (`streaming`) or written to temporary files first (`persisted`, see [`distributed_plan_force_exchange_kind`](/reference/settings/session-settings/distributed-plan#distributed_plan_force_exchange_kind)), in which case the consumer starts only after the producer has finished; and the number of source and destination buckets.
 - `Levels` — fragment ids grouped by their depth, from the fragments without dependencies to the fragment that produces the result. The fragments of one level do not depend on each other.
 
-The sets of `IN` subqueries are not shown yet: the plan names such a set (for example `bid IN subquery1`), but no fragment builds it.
+An `IN` subquery is built into a set on the initiator before the tasks of the query start, and the set is shipped inside every task that reads it. Each such set is shown as one more query fragment after the fragments of the query, with the header `Query fragment <id> (set: <subquery>) · single node · tasks=1`; with `pretty`, the header names the set as the plans that read it do, for example `(set: subquery1)`. Its plan is the `CreatingSet` step that fills the set. When the subquery itself is distributed, the fragment receives its result through the `final_result` exchange, and the stages of the subquery follow as fragments named `<stage name> of set F<id>`, with exchanges named `<exchange name> of set F<id>`, because every subquery is cut on its own and repeats the stage and exchange names of the query. When it is not, the fragment contains the whole plan of the subquery, and the reason, if the subquery could not be distributed, is printed under the header as `Not distributed: <reason>`. A set that was already built while the query was planned (for example, for the analysis of the primary key) is marked `built during planning`: the execution of the query does not build it again. In the `Exchanges` section, every fragment that reads a set has an exchange `set_<N>: set values` from the fragment that fills the set.
 
 A distributed query without exchanges is printed as one query fragment that sends the result through the `final_result` exchange.
 
@@ -905,6 +905,51 @@ Exchanges:
   exchange_1: broadcast, streaming, F1 -> F2, buckets 1 -> 3
   exchange_2: gather, streaming, F2 -> F3, buckets 3 -> 1
 Levels: [F0, F1] -> [F2] -> [F3]
+```
+
+An `IN` subquery adds the fragment that fills the set, here with the one stage of the subquery:
+
+```sql
+EXPLAIN fragments = 1
+SELECT b % 10 AS k, count() FROM big WHERE b IN (SELECT sid FROM small WHERE s = 1) GROUP BY k
+SETTINGS make_distributed_plan = 1, explain_query_plan_default = 'legacy';
+```
+
+```text
+Query fragment 2 (main) · tasks=1
+GatherSend (final_result)
+  GatherReceive (exchange_1)
+
+Query fragment 1 (stage_1) · tasks=3
+GatherSend (exchange_1)
+  Expression ((Project names + Projection))
+    MergingAggregated (merge)
+      ShuffleReceive (exchange_0)
+
+Query fragment 0 (stage_0) · tasks=3
+ShuffleSend (exchange_0)
+  Aggregating (partial)
+    Expression (Before GROUP BY)
+      Filter ((WHERE + Change column names to column identifiers))
+        ReadFromMergeTree (default.big)
+
+Query fragment 4 (set: (SELECT __table1.sid AS sid FROM default.small AS __table1 WHERE __table1.s = 1)) · single node · tasks=1
+CreatingSet (Create set for subquery)
+  GatherReceive (final_result)
+
+Query fragment 3 (main of set F4) · tasks=1
+GatherSend (final_result)
+  Distinct
+    Expression ((Project names + Projection))
+      Filter ((WHERE + Change column names to column identifiers))
+        ReadFromMergeTree (default.small)
+
+Exchanges:
+  exchange_0: hash(modulo(__table1.b, 10_UInt8)), streaming, F0 -> F1, buckets 3 -> 3
+  exchange_1: gather, streaming, F1 -> F2, buckets 3 -> 1
+  set_0: set values, F4 -> F0
+  final_result of set F4: gather, streaming, F3 -> F4, buckets 1 -> 1
+Levels: [F3] -> [F4] -> [F0] -> [F1] -> [F2]
 ```
 
 ### EXPLAIN PIPELINE {#explain-pipeline}
