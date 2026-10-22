@@ -36,6 +36,20 @@ public:
 
     void explain(WriteBuffer & buf) const;
 
+    /// The parts of the output that `EXPLAIN PLAN tree = 1` shares.
+
+    /// The plan was not cut: `explain` prints it as `EXPLAIN` without `fragments` prints it.
+    bool isSingleNode() const { return single_node; }
+    void explainExchanges(WriteBuffer & buf) const;
+    void explainLevels(WriteBuffer & buf) const;
+    /// `<stage name>`, `<stage name> of set F<id>`, or `set: <set>` for the fragment that fills a set.
+    String formatFragmentLabel(const QueryFragment & fragment) const;
+    /// `<exchange name>`, or `<exchange name> of set F<id>` for an exchange of the distributed source of a set.
+    static String formatExchangeName(const FragmentExchange & exchange);
+    /// With `pretty`, the keys and the sort columns are named as in the fragments.
+    String formatKind(const FragmentExchange & exchange) const;
+    static std::string_view formatMode(ExchangeDescription::Kind mode);
+
 private:
     const FragmentGraph & graph;
     const ExplainPlanOptions & options;
@@ -55,12 +69,6 @@ private:
 
     void explainSingleNode(WriteBuffer & buf) const;
     void explainFragments(WriteBuffer & buf) const;
-    void explainExchanges(WriteBuffer & buf) const;
-    void explainLevels(WriteBuffer & buf) const;
-
-    /// With `pretty`, the keys and the sort columns are named as in the fragments.
-    String formatKind(const FragmentExchange & exchange) const;
-
     /// Every receive step of a fragment with the plan of the fragment that sends to it.
     FragmentInputs getFragmentInputs() const;
 
@@ -70,7 +78,6 @@ private:
     String formatSetName(const QueryFragment & fragment) const;
     /// ` of set F<id>` for a stage or an exchange of the distributed source of a set, whose names repeat those of the query.
     static String formatSetSuffix(std::optional<UInt32> set_fragment);
-    static std::string_view formatMode(ExchangeDescription::Kind mode);
     /// A set built while the query was planned may have no plan left; any other fragment without a plan is an error,
     /// which `getPlan` reports.
     static bool hasPlan(const QueryFragment & fragment);

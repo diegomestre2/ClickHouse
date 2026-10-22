@@ -384,6 +384,7 @@ Settings:
 - `column_structure` — Prints also the structure of columns in headers on top of their name and type. Default: 0. Mostly useful only for developers to debug issues related to input-output header mismatch.
 - `distributed` — Shows query plans executed on remote nodes for distributed tables or parallel replicas. Not supported together with `json`. Default: 0.
 - `fragments` — For a query executed by stateless workers (`make_distributed_plan = 1`), prints the plan of every query fragment and the exchanges between the fragments. Requires `optimize = 1`. Not supported together with `json` or `distributed`. Default: 0. See [Query fragments](#explain-plan-fragments).
+- `tree` — For a query executed by stateless workers (`make_distributed_plan = 1`), draws every step as a box, the query fragments as frames around their steps and the exchanges as edges between the fragments, followed by the exchanges and the levels. Requires `optimize = 1`. Not supported together with `fragments`, `json` or `distributed`. Default: 0. See [Query fragment tree](#explain-plan-fragments-tree).
 - `compact` — When enabled, hides expression steps and detailed action info (inputs, functions, aliases, and output positions) from the plan. Only has an effect when `actions = 1`. Default: 1.
 - `pretty` — Prints the plan tree using line-drawing characters (├──, └──, │) instead of indentation to visualize the hierarchy. Also formats join step properties inline. Default: 1.
 
@@ -950,6 +951,104 @@ Exchanges:
   set_0: set values, F4 -> F0
   final_result of set F4: gather, streaming, F3 -> F4, buckets 1 -> 1
 Levels: [F3] -> [F4] -> [F0] -> [F1] -> [F2]
+```
+
+#### Query fragment tree {#explain-plan-fragments-tree}
+
+With `tree` = 1, a query that is executed by stateless workers is drawn as it is cut for execution. Every step of the plan is a box, connected to the boxes of its inputs as in the plan tree, so data flows upward. The steps of one query fragment are surrounded by a frame titled `F<id> · <stage name>`, and every fragment is drawn under the fragment that reads it. An exchange is an edge from the send step of the producer up to the receive step of the consumer, crossing both frames (`┼`), with a label: the exchange name and how the data is distributed, then the mode and the number of source and destination buckets. The edge is `│` for a `streaming` exchange and `╎` for a `persisted` one, whose consumer starts only after the producer has finished.
+
+A box shows only the name of the step and, with `description` = 1, its description, where `pretty` = 1 drops the table prefix of column names, as in the labels; the options that add details under the steps, such as `header`, `actions`, `indexes`, `projections` and `sorting`, do not change the drawing, use `fragments` = 1 to see them. With `estimates` = 1, the label of an exchange also shows the estimated number of rows the producer sends (`~<N> rows`). Step texts are cut at 40 columns and the first label line at 48, with `…`; the `Exchanges` section after the drawing repeats the full text. The drawing does not depend on the width of the terminal. When the query is not distributed, the plan is printed as without `tree`, followed by `Not distributed: <reason>` if the query fell back to local execution. The `tree` option of `EXPLAIN PLAN` is unrelated to the `EXPLAIN QUERY TREE` statement.
+
+Example:
+
+```sql
+EXPLAIN tree = 1
+SELECT small.sid, count()
+FROM big, small
+WHERE small.sid = (big.bid + 1) % 5000
+GROUP BY small.sid
+SETTINGS make_distributed_plan = 1, distributed_plan_max_rows_to_broadcast = 0;
+```
+
+```text
+                                                ┌─ F4 · main ────────────────────┐
+                                                │                                │
+                                                │  ┌───────────────────────────┐ │
+                                                │  │ GatherSend (final_result) │ │
+                                                │  └─────────────▲─────────────┘ │
+                                                │                │               │
+                                                │ ┌──────────────┴─────────────┐ │
+                                                │ │ GatherReceive (exchange_3) │ │
+                                                │ └──────────────▲─────────────┘ │
+                                                └────────────────┼───────────────┘
+                                                                 │ exchange_3 · gather
+                                                                 │ streaming · 8 → 1
+                                         ┌─ F3 · stage_3 ────────┼──────────────────────┐
+                                         │                       │                      │
+                                         │          ┌────────────┴────────────┐         │
+                                         │          │ GatherSend (exchange_3) │         │
+                                         │          └────────────▲────────────┘         │
+                                         │                       │                      │
+                                         │ ┌─────────────────────┴────────────────────┐ │
+                                         │ │ Expression ((Project names + Projection… │ │
+                                         │ └─────────────────────▲────────────────────┘ │
+                                         │                       │                      │
+                                         │                ┌──────┴──────┐               │
+                                         │                │ Aggregating │               │
+                                         │                └──────▲──────┘               │
+                                         │                       │                      │
+                                         │        ┌──────────────┴──────────────┐       │
+                                         │        │ ShuffleReceive (exchange_2) │       │
+                                         │        └──────────────▲──────────────┘       │
+                                         └───────────────────────┼──────────────────────┘
+                                                                 │ exchange_2 · hash(sid)
+                                                                 │ streaming · 8 → 8
+       ┌─ F2 · stage_2 ──────────────────────────────────────────┼─────────────────────────────────────────────────────────┐
+       │                                                         │                                                         │
+       │                                           ┌─────────────┴────────────┐                                            │
+       │                                           │ ShuffleSend (exchange_2) │                                            │
+       │                                           └─────────────▲────────────┘                                            │
+       │                                                         │                                                         │
+       │                                         ┌───────────────┴──────────────┐                                          │
+       │                                         │ Expression (Before GROUP BY) │                                          │
+       │                                         └───────────────▲──────────────┘                                          │
+       │                                                         │                                                         │
+       │                                                  ┌──────┴──────┐                                                  │
+       │                                                  │ JoinLogical │                                                  │
+       │                                                  └──────▲──────┘                                                  │
+       │                                                         │                                                         │
+       │                ┌────────────────────────────────────────┴────────────────────────────────────────┐                │
+       │ ┌──────────────┴──────────────┐                                                   ┌──────────────┴──────────────┐ │
+       │ │ ShuffleReceive (exchange_0) │                                                   │ ShuffleReceive (exchange_1) │ │
+       │ └──────────────▲──────────────┘                                                   └──────────────▲──────────────┘ │
+       └────────────────┼─────────────────────────────────────────────────────────────────────────────────┼────────────────┘
+                        │ exchange_0 · hash(modulo(plus(bid, 1_UInt8), 50…                                │ exchange_1 · hash(sid)
+                        │ streaming · 8 → 8                                                               │ streaming · 8 → 8
+┌─ F0 · stage_0 ────────┼──────────────────────┐                                  ┌─ F1 · stage_1 ────────┼──────────────────────┐
+│                       │                      │                                  │                       │                      │
+│         ┌─────────────┴────────────┐         │                                  │         ┌─────────────┴────────────┐         │
+│         │ ShuffleSend (exchange_0) │         │                                  │         │ ShuffleSend (exchange_1) │         │
+│         └─────────────▲────────────┘         │                                  │         └─────────────▲────────────┘         │
+│                       │                      │                                  │                       │                      │
+│ ┌─────────────────────┴────────────────────┐ │                                  │ ┌─────────────────────┴────────────────────┐ │
+│ │ Filter (((Apply runtime join filter + C… │ │                                  │ │ BuildRuntimeFilter (Build runtime join … │ │
+│ └─────────────────────▲────────────────────┘ │                                  │ └─────────────────────▲────────────────────┘ │
+│                       │                      │                                  │                       │                      │
+│      ┌────────────────┴────────────────┐     │                                  │ ┌─────────────────────┴────────────────────┐ │
+│      │ ReadFromMergeTree (default.big) │     │                                  │ │ Expression (Change column names to colu… │ │
+│      └─────────────────────────────────┘     │                                  │ └─────────────────────▲────────────────────┘ │
+└──────────────────────────────────────────────┘                                  │                       │                      │
+                                                                                  │     ┌─────────────────┴─────────────────┐    │
+                                                                                  │     │ ReadFromMergeTree (default.small) │    │
+                                                                                  │     └───────────────────────────────────┘    │
+                                                                                  └──────────────────────────────────────────────┘
+
+Exchanges:
+  exchange_0: hash(modulo(plus(bid, 1_UInt8), 5000_UInt16)), streaming, F0 -> F2, buckets 8 -> 8
+  exchange_1: hash(sid), streaming, F1 -> F2, buckets 8 -> 8
+  exchange_2: hash(sid), streaming, F2 -> F3, buckets 8 -> 8
+  exchange_3: gather, streaming, F3 -> F4, buckets 8 -> 1
+Levels: [F0, F1] -> [F2] -> [F3] -> [F4]
 ```
 
 ### EXPLAIN PIPELINE {#explain-pipeline}

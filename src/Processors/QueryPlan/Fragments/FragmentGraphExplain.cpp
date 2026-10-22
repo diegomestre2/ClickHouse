@@ -93,8 +93,7 @@ void FragmentGraphExplain::explainFragments(WriteBuffer & buf) const
 {
     for (const auto * fragment : print_order)
     {
-        String label = isSetFragment(*fragment) ? "set: " + formatSetName(*fragment) : fragment->stage_name + formatSetSuffix(fragment->set_fragment);
-        buf << fmt::format("Query fragment {} ({})", fragment->id, label);
+        buf << fmt::format("Query fragment {} ({})", fragment->id, formatFragmentLabel(*fragment));
         if (fragment->execution_mode == QueryFragment::ExecutionMode::SingleNode)
             buf << " · single node";
         buf << fmt::format(" · tasks={}", fragment->tasks);
@@ -117,7 +116,7 @@ void FragmentGraphExplain::explainExchanges(WriteBuffer & buf) const
     buf << "Exchanges:\n";
     for (const auto & exchange : graph.exchanges)
     {
-        const String name = exchange.name + formatSetSuffix(exchange.set_fragment);
+        const String name = formatExchangeName(exchange);
         /// A set is shipped inside the tasks that read it: it has no transport and no buckets of its own.
         if (exchange.kind == FragmentExchange::Kind::SetValues)
         {
@@ -185,6 +184,18 @@ String FragmentGraphExplain::formatKind(const FragmentExchange & exchange) const
             return "set values";
     }
     throw Exception(ErrorCodes::LOGICAL_ERROR, "Unexpected kind of exchange {}", exchange.name);
+}
+
+String FragmentGraphExplain::formatFragmentLabel(const QueryFragment & fragment) const
+{
+    if (isSetFragment(fragment))
+        return "set: " + formatSetName(fragment);
+    return fragment.stage_name + formatSetSuffix(fragment.set_fragment);
+}
+
+String FragmentGraphExplain::formatExchangeName(const FragmentExchange & exchange)
+{
+    return exchange.name + formatSetSuffix(exchange.set_fragment);
 }
 
 bool FragmentGraphExplain::isSetFragment(const QueryFragment & fragment)
