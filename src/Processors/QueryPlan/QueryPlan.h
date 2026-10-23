@@ -170,6 +170,7 @@ public:
     /// The first part of `convertToDistributed`: checks that the optimized plan can still be distributed,
     /// takes the `IN`-subquery sets out of it, cuts it into the stages of a distributed plan, and adds the
     /// `final_result` exchange to the `main` stage.
+    /// Consumes the plan: its nodes move into the stages of the result, and the plan is left empty, with no root.
     DistributedPlanCut cutIntoDistributedPlan(const QueryPlanOptimizationSettings & optimization_settings);
 
     /// The single decision function for `make_distributed_plan`. When this plan cannot be
