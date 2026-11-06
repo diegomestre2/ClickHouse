@@ -1,0 +1,405 @@
+-- join chain, single node
+Output: name, any(city_name_in_english), sum(price)
+
+               ┌───────────────────────────────────────────────────┐
+               │ Aggregating                                       │
+               ├───────────────────────────────────────────────────┤
+               │ Keys: name                                        │
+               │ Aggregates: any(city_name_in_english), sum(price) │
+               │ Skip merging: 0                                   │
+               └─────────────────────────▲─────────────────────────┘
+                                         │
+         ┌───────────────────────────────┴──────────────────────────────┐
+         │ Join (JOIN FillRightFirst)                                   ◀─ right ────────────────┐
+         ├──────────────────────────────────────────────────────────────┤                        │
+         │ Type: inner | Strictness: all | Algorithm: SpillingHashJoin… │                        │
+         │ Cost: estimated no stats                                     │                        │
+         │ Selectivity: estimated (NDV) no stats                        │                        │
+         │ Output rows: estimated no stats                              │                        │
+         │ Left: rows estimated no stats                                │                        │
+         │ Right: rows estimated no stats                               │                        │
+         │ Join conditions: product_id = product_id                     │                        │
+         │ Input (left): product_id, city_name_in_english, name         │                        │
+         │ Input (right): product_id, price                             │                        │
+         └───────────────────────────────▲──────────────────────────────┘                        │
+                                         │ left                                                  │
+                                         │                                 ┌─────────────────────┴────────────────────┐
+                                         │                                 │ ReadFromMergeTree (db_XXXXXXXX.products) │
+                                         │                                 ├──────────────────────────────────────────┤
+                                         │                                 │ Read type: Default                       │
+                                         │                                 │ Parts: 1 | Granules: 1                   │
+                                         │                                 │ Output: price, product_id                │
+                                         │                                 └──────────────────────────────────────────┘
+                                         │
+         ┌───────────────────────────────┴──────────────────────────────┐
+         │ Join (JOIN FillRightFirst)                                   ◀─ right ───────────────┐
+         ├──────────────────────────────────────────────────────────────┤                       │
+         │ Type: inner | Strictness: all | Algorithm: SpillingHashJoin… │                       │
+         │ Cost: estimated no stats                                     │                       │
+         │ Selectivity: estimated (NDV) no stats                        │                       │
+         │ Output rows: estimated no stats                              │                       │
+         │ Left: rows estimated no stats                                │                       │
+         │ Right: rows estimated no stats                               │                       │
+         │ Join conditions: region_id = region_id                       │                       │
+         │ Input (left): region_id, product_id, city_name_in_english    │                       │
+         │ Input (right): region_id, name                               │                       │
+         └───────────────────────────────▲──────────────────────────────┘                       │
+                                         │ left                                                 │
+                                         │                                 ┌────────────────────┴────────────────────┐
+                                         │                                 │ ReadFromMergeTree (db_XXXXXXXX.regions) │
+                                         │                                 ├─────────────────────────────────────────┤
+                                         │                                 │ Read type: Default                      │
+                                         │                                 │ Parts: 1 | Granules: 1                  │
+                                         │                                 │ Output: name, region_id                 │
+                                         │                                 └─────────────────────────────────────────┘
+                                         │
+         ┌───────────────────────────────┴──────────────────────────────┐
+         │ Join (JOIN FillRightFirst)                                   ◀─ right ──────────┐
+         ├──────────────────────────────────────────────────────────────┤                  │
+         │ Type: inner | Strictness: all | Algorithm: SpillingHashJoin… │                  │
+         │ Cost: estimated no stats                                     │                  │
+         │ Selectivity: estimated (NDV) no stats                        │                  │
+         │ Output rows: estimated no stats                              │                  │
+         │ Left: rows estimated no stats                                │                  │
+         │ Right: rows estimated no stats                               │                  │
+         │ Join conditions: country_id = country_id                     │                  │
+         │ Input (left): country_id, product_id, city_name_in_english   │                  │
+         │ Input (right): country_id, region_id                         │                  │
+         └───────────────────────────────▲──────────────────────────────┘                  │
+                                         │ left                                            │
+                                         │                                 ┌───────────────┴───────────────┐
+                                         │                                 │ ReadFromMergeTree             │
+                                         │                                 │ (db_XXXXXXXX.countries)       │
+                                         │                                 ├───────────────────────────────┤
+                                         │                                 │ Read type: Default            │
+                                         │                                 │ Parts: 1 | Granules: 1        │
+                                         │                                 │ Output: country_id, region_id │
+                                         │                                 └───────────────────────────────┘
+                                         │
+         ┌───────────────────────────────┴──────────────────────────────┐
+         │ Join (JOIN FillRightFirst)                                   ◀─ right ────────────────────┐
+         ├──────────────────────────────────────────────────────────────┤                            │
+         │ Type: inner | Strictness: all | Algorithm: SpillingHashJoin… │                            │
+         │ Cost: estimated no stats                                     │                            │
+         │ Selectivity: estimated (NDV) no stats                        │                            │
+         │ Output rows: estimated no stats                              │                            │
+         │ Left: rows estimated no stats                                │                            │
+         │ Right: rows estimated no stats                               │                            │
+         │ Join conditions: city_id = city_id                           │                            │
+         │ Input (left): city_id, product_id                            │                            │
+         │ Input (right): city_id, city_name_in_english, country_id     │                            │
+         └───────────────────────────────▲──────────────────────────────┘                            │
+                                         │ left                                                      │
+                                         │                                 ┌─────────────────────────┴─────────────────────────┐
+                                         │                                 │ ReadFromMergeTree (db_XXXXXXXX.cities)            │
+                                         │                                 ├───────────────────────────────────────────────────┤
+                                         │                                 │ Read type: Default                                │
+                                         │                                 │ Parts: 1 | Granules: 1                            │
+                                         │                                 │ Output: city_name_in_english, city_id, country_id │
+                                         │                                 └───────────────────────────────────────────────────┘
+                                         │
+         ┌───────────────────────────────┴──────────────────────────────┐
+         │ Join (JOIN FillRightFirst)                                   │
+         ├──────────────────────────────────────────────────────────────┤
+         │ o ⋈ c                                                        │
+         │ Type: inner | Strictness: all | Algorithm: SpillingHashJoin… │
+         │ Cost: estimated no stats                                     │
+         │ Selectivity: estimated (NDV) no stats                        │
+         │ Output rows: estimated no stats                              │
+         │ Left: rows estimated no stats                                │
+         │ Right: rows estimated no stats                               │
+         │ Join conditions: customer_id = customer_id                   │
+         │ Input (left): customer_id, product_id                        │
+         │ Input (right): customer_id, city_id                          │
+         └───────────────────────────────▲──────────────────────────────┘
+                                         │
+                     ┌───────────────────┴───────────────────┐
+┌────────────────────┴───────────────────┐   ┌───────────────┴──────────────┐
+│ ReadFromMergeTree (db_XXXXXXXX.orders) │   │ ReadFromMergeTree            │
+├────────────────────────────────────────┤   │ (db_XXXXXXXX.customers)      │
+│ Read type: Default                     │   ├──────────────────────────────┤
+│ Parts: 1 | Granules: 13                │   │ Read type: Default           │
+│ Output: customer_id, product_id        │   │ Parts: 1 | Granules: 1       │
+└────────────────────────────────────────┘   │ Output: customer_id, city_id │
+                                             └──────────────────────────────┘
+-- union of wide reads
+Output: city_id
+
+                                                                         ┌───────┐
+                                                                         │ Union │
+                                                                         └───▲───┘
+                                                                             │
+                     ┌────────────────────────────────────┬──────────────────┴──────────────────┬────────────────────────────────────┐
+┌────────────────────┴───────────────────┐   ┌────────────┴────────────┐   ┌────────────────────┴───────────────────┐   ┌────────────┴────────────┐
+│ ReadFromMergeTree (db_XXXXXXXX.orders) │   │ ReadFromMergeTree       │   │ ReadFromMergeTree (db_XXXXXXXX.cities) │   │ ReadFromMergeTree       │
+├────────────────────────────────────────┤   │ (db_XXXXXXXX.customers) │   ├────────────────────────────────────────┤   │ (db_XXXXXXXX.countries) │
+│ Read type: Default                     │   ├─────────────────────────┤   │ Read type: Default                     │   ├─────────────────────────┤
+│ Parts: 1 | Granules: 13                │   │ Read type: Default      │   │ Parts: 1 | Granules: 1                 │   │ Read type: Default      │
+│ Output: city_id                        │   │ Parts: 1 | Granules: 1  │   │ Output: city_id                        │   │ Parts: 1 | Granules: 1  │
+└────────────────────────────────────────┘   │ Output: city_id         │   └────────────────────────────────────────┘   │ Output: country_id      │
+                                             └─────────────────────────┘                                                └─────────────────────────┘
+-- join chain, stateless workers
+Output: name, any(city_name_in_english), sum(price)
+
+                                   ┌─ F12 · main ────────────────────┐
+                                   │                                 │
+                                   │  ┌───────────────────────────┐  │
+                                   │  │ GatherSend (final_result) │  │
+                                   │  └─────────────▲─────────────┘  │
+                                   │                │                │
+                                   │ ┌──────────────┴──────────────┐ │
+                                   │ │ GatherReceive (exchange_11) │ │
+                                   │ └──────────────▲──────────────┘ │
+                                   └────────────────┼────────────────┘
+                                                    │ exchange_11 · gather
+                                                    │ streaming · 3 → 1
+                        ┌─ F11 · stage_11 ──────────┼───────────────────────────┐
+                        │                           │                           │
+                        │             ┌─────────────┴────────────┐              │
+                        │             │ GatherSend (exchange_11) │              │
+                        │             └─────────────▲────────────┘              │
+                        │                           │                           │
+                        │ ┌─────────────────────────┴─────────────────────────┐ │
+                        │ │ MergingAggregated (merge)                         │ │
+                        │ ├───────────────────────────────────────────────────┤ │
+                        │ │ Keys: name                                        │ │
+                        │ │ Aggregates: any(city_name_in_english), sum(price) │ │
+                        │ └─────────────────────────▲─────────────────────────┘ │
+                        │                           │                           │
+                        │           ┌───────────────┴──────────────┐            │
+                        │           │ ShuffleReceive (exchange_10) │            │
+                        │           └───────────────▲──────────────┘            │
+                        └───────────────────────────┼───────────────────────────┘
+                                                    │ exchange_10 · hash(name)
+                                                    │ streaming · 3 → 3
+                  ┌─ F10 · stage_10 ────────────────┼──────────────────────────────────────────────────────────────────────────┐
+                  │                                 │                                                                          │
+                  │                   ┌─────────────┴─────────────┐                                                            │
+                  │                   │ ShuffleSend (exchange_10) │                                                            │
+                  │                   └─────────────▲─────────────┘                                                            │
+                  │                                 │                                                                          │
+                  │       ┌─────────────────────────┴─────────────────────────┐                                                │
+                  │       │ Aggregating (partial)                             │                                                │
+                  │       ├───────────────────────────────────────────────────┤                                                │
+                  │       │ Keys: name                                        │                                                │
+                  │       │ Aggregates: any(city_name_in_english), sum(price) │                                                │
+                  │       │ Skip merging: 0                                   │                                                │
+                  │       └─────────────────────────▲─────────────────────────┘                                                │
+                  │                                 │                                                                          │
+                  │ ┌───────────────────────────────┴──────────────────────────────┐                                           │
+                  │ │ JoinLogical                                                  ◀─ right ──────────────────┐                │
+                  │ ├──────────────────────────────────────────────────────────────┤                          │                │
+                  │ │ ResultRows: unknown                                          │                          │                │
+                  │ │ Type: INNER                                                  │                          │                │
+                  │ │ Strictness: ALL                                              │                          │                │
+                  │ │ Locality: UNSPECIFIED                                        │                          │                │
+                  │ │ Expression: equals(__table1.product_id, __table6.product_id) │                          │                │
+                  │ └───────────────────────────────▲──────────────────────────────┘                          │                │
+                  │                                 │ left                                                    │                │
+                  │                                 │                                          ┌──────────────┴──────────────┐ │
+                  │                                 │                                          │ ShuffleReceive (exchange_9) │ │
+                  │                                 │                                          └──────────────▲──────────────┘ │
+                  │                                 │                                                         │                │
+                  │                  ┌──────────────┴──────────────┐                                          │                │
+                  │                  │ ShuffleReceive (exchange_8) │                                          │                │
+                  │                  └──────────────▲──────────────┘                                          │                │
+                  └─────────────────────────────────┼─────────────────────────────────────────────────────────┼────────────────┘
+                                                    │                                                         │ exchange_9 · hash(product_id)
+                                                    │                                                         │ streaming · 3 → 3
+                                                    │                                 ┌─ F9 · stage_9 ────────┼──────────────────────┐
+                                                    │                                 │                       │                      │
+                                                    │                                 │         ┌─────────────┴────────────┐         │
+                                                    │                                 │         │ ShuffleSend (exchange_9) │         │
+                                                    │                                 │         └─────────────▲────────────┘         │
+                                                    │                                 │                       │                      │
+                                                    │                                 │ ┌─────────────────────┴────────────────────┐ │
+                                                    │                                 │ │ ReadFromMergeTree (db_XXXXXXXX.products) │ │
+                                                    │                                 │ ├──────────────────────────────────────────┤ │
+                                                    │                                 │ │ Read type: Default                       │ │
+                                                    │                                 │ │ Parts: 1 | Granules: 1                   │ │
+                                                    │                                 │ │ Output: price, product_id                │ │
+                                                    │                                 │ └──────────────────────────────────────────┘ │
+                                                    │                                 └──────────────────────────────────────────────┘
+                                                    │ exchange_8 · hash(product_id)
+                                                    │ streaming · 3 → 3
+                   ┌─ F8 · stage_8 ─────────────────┼────────────────────────────────────────────────────────────────────────┐
+                   │                                │                                                                        │
+                   │                  ┌─────────────┴────────────┐                                                           │
+                   │                  │ ShuffleSend (exchange_8) │                                                           │
+                   │                  └─────────────▲────────────┘                                                           │
+                   │                                │                                                                        │
+                   │ ┌──────────────────────────────┴─────────────────────────────┐                                          │
+                   │ │ JoinLogical                                                ◀─ right ─────────────────┐                │
+                   │ ├────────────────────────────────────────────────────────────┤                         │                │
+                   │ │ ResultRows: unknown                                        │                         │                │
+                   │ │ Type: INNER                                                │                         │                │
+                   │ │ Strictness: ALL                                            │                         │                │
+                   │ │ Locality: UNSPECIFIED                                      │                         │                │
+                   │ │ Expression: equals(__table4.region_id, __table5.region_id) │                         │                │
+                   │ └──────────────────────────────▲─────────────────────────────┘                         │                │
+                   │                                │ left                                                  │                │
+                   │                                │                                        ┌──────────────┴──────────────┐ │
+                   │                                │                                        │ ShuffleReceive (exchange_7) │ │
+                   │                                │                                        └──────────────▲──────────────┘ │
+                   │                                │                                                       │                │
+                   │                 ┌──────────────┴──────────────┐                                        │                │
+                   │                 │ ShuffleReceive (exchange_6) │                                        │                │
+                   │                 └──────────────▲──────────────┘                                        │                │
+                   └────────────────────────────────┼───────────────────────────────────────────────────────┼────────────────┘
+                                                    │                                                       │ exchange_7 · hash(region_id)
+                                                    │                                                       │ streaming · 3 → 3
+                                                    │                                ┌─ F7 · stage_7 ───────┼──────────────────────┐
+                                                    │                                │                      │                      │
+                                                    │                                │        ┌─────────────┴────────────┐         │
+                                                    │                                │        │ ShuffleSend (exchange_7) │         │
+                                                    │                                │        └─────────────▲────────────┘         │
+                                                    │                                │                      │                      │
+                                                    │                                │ ┌────────────────────┴────────────────────┐ │
+                                                    │                                │ │ ReadFromMergeTree (db_XXXXXXXX.regions) │ │
+                                                    │                                │ ├─────────────────────────────────────────┤ │
+                                                    │                                │ │ Read type: Default                      │ │
+                                                    │                                │ │ Parts: 1 | Granules: 1                  │ │
+                                                    │                                │ │ Output: name, region_id                 │ │
+                                                    │                                │ └─────────────────────────────────────────┘ │
+                                                    │                                └─────────────────────────────────────────────┘
+                                                    │ exchange_6 · hash(region_id)
+                                                    │ streaming · 3 → 3
+                  ┌─ F6 · stage_6 ──────────────────┼────────────────────────────────────────────────────────────────────┐
+                  │                                 │                                                                    │
+                  │                   ┌─────────────┴────────────┐                                                       │
+                  │                   │ ShuffleSend (exchange_6) │                                                       │
+                  │                   └─────────────▲────────────┘                                                       │
+                  │                                 │                                                                    │
+                  │ ┌───────────────────────────────┴──────────────────────────────┐                                     │
+                  │ │ JoinLogical                                                  ◀─ right ────────────┐                │
+                  │ ├──────────────────────────────────────────────────────────────┤                    │                │
+                  │ │ ResultRows: unknown                                          │                    │                │
+                  │ │ Type: INNER                                                  │                    │                │
+                  │ │ Strictness: ALL                                              │                    │                │
+                  │ │ Locality: UNSPECIFIED                                        │                    │                │
+                  │ │ Expression: equals(__table3.country_id, __table4.country_id) │                    │                │
+                  │ └───────────────────────────────▲──────────────────────────────┘                    │                │
+                  │                                 │ left                                              │                │
+                  │                                 │                                    ┌──────────────┴──────────────┐ │
+                  │                                 │                                    │ ShuffleReceive (exchange_5) │ │
+                  │                                 │                                    └──────────────▲──────────────┘ │
+                  │                                 │                                                   │                │
+                  │                  ┌──────────────┴──────────────┐                                    │                │
+                  │                  │ ShuffleReceive (exchange_4) │                                    │                │
+                  │                  └──────────────▲──────────────┘                                    │                │
+                  └─────────────────────────────────┼───────────────────────────────────────────────────┼────────────────┘
+                                                    │                                                   │ exchange_5 · hash(country_id)
+                                                    │                                                   │ streaming · 3 → 3
+                                                    │                                 ┌─ F5 · stage_5 ──┼─────────────────┐
+                                                    │                                 │                 │                 │
+                                                    │                                 │   ┌─────────────┴────────────┐    │
+                                                    │                                 │   │ ShuffleSend (exchange_5) │    │
+                                                    │                                 │   └─────────────▲────────────┘    │
+                                                    │                                 │                 │                 │
+                                                    │                                 │ ┌───────────────┴───────────────┐ │
+                                                    │                                 │ │ ReadFromMergeTree             │ │
+                                                    │                                 │ │ (db_XXXXXXXX.countries)       │ │
+                                                    │                                 │ ├───────────────────────────────┤ │
+                                                    │                                 │ │ Read type: Default            │ │
+                                                    │                                 │ │ Parts: 1 | Granules: 1        │ │
+                                                    │                                 │ │ Output: country_id, region_id │ │
+                                                    │                                 │ └───────────────────────────────┘ │
+                                                    │                                 └───────────────────────────────────┘
+                                                    │ exchange_4 · hash(country_id)
+                                                    │ streaming · 3 → 3
+                     ┌─ F4 · stage_4 ───────────────┼───────────────────────────────────────────────────────────────────────────┐
+                     │                              │                                                                           │
+                     │                ┌─────────────┴────────────┐                                                              │
+                     │                │ ShuffleSend (exchange_4) │                                                              │
+                     │                └─────────────▲────────────┘                                                              │
+                     │                              │                                                                           │
+                     │ ┌────────────────────────────┴───────────────────────────┐                                               │
+                     │ │ JoinLogical                                            ◀─ right ──────────────────────┐                │
+                     │ ├────────────────────────────────────────────────────────┤                              │                │
+                     │ │ ResultRows: unknown                                    │                              │                │
+                     │ │ Type: INNER                                            │                              │                │
+                     │ │ Strictness: ALL                                        │                              │                │
+                     │ │ Locality: UNSPECIFIED                                  │                              │                │
+                     │ │ Expression: equals(__table2.city_id, __table3.city_id) │                              │                │
+                     │ └────────────────────────────▲───────────────────────────┘                              │                │
+                     │                              │ left                                                     │                │
+                     │                              │                                           ┌──────────────┴──────────────┐ │
+                     │                              │                                           │ ShuffleReceive (exchange_3) │ │
+                     │                              │                                           └──────────────▲──────────────┘ │
+                     │                              │                                                          │                │
+                     │               ┌──────────────┴──────────────┐                                           │                │
+                     │               │ ShuffleReceive (exchange_2) │                                           │                │
+                     │               └──────────────▲──────────────┘                                           │                │
+                     └──────────────────────────────┼──────────────────────────────────────────────────────────┼────────────────┘
+                                                    │                                                          │ exchange_3 · hash(city_id)
+                                                    │                                                          │ streaming · 3 → 3
+                                                    │                              ┌─ F3 · stage_3 ────────────┼───────────────────────────┐
+                                                    │                              │                           │                           │
+                                                    │                              │             ┌─────────────┴────────────┐              │
+                                                    │                              │             │ ShuffleSend (exchange_3) │              │
+                                                    │                              │             └─────────────▲────────────┘              │
+                                                    │                              │                           │                           │
+                                                    │                              │ ┌─────────────────────────┴─────────────────────────┐ │
+                                                    │                              │ │ ReadFromMergeTree (db_XXXXXXXX.cities)            │ │
+                                                    │                              │ ├───────────────────────────────────────────────────┤ │
+                                                    │                              │ │ Read type: Default                                │ │
+                                                    │                              │ │ Parts: 1 | Granules: 1                            │ │
+                                                    │                              │ │ Output: city_name_in_english, city_id, country_id │ │
+                                                    │                              │ └───────────────────────────────────────────────────┘ │
+                                                    │                              └───────────────────────────────────────────────────────┘
+                                                    │ exchange_2 · hash(city_id)
+                                                    │ streaming · 3 → 3
+      ┌─ F2 · stage_2 ──────────────────────────────┼─────────────────────────────────────────────┐
+      │                                             │                                             │
+      │                               ┌─────────────┴────────────┐                                │
+      │                               │ ShuffleSend (exchange_2) │                                │
+      │                               └─────────────▲────────────┘                                │
+      │                                             │                                             │
+      │             ┌───────────────────────────────┴──────────────────────────────┐              │
+      │             │ JoinLogical                                                  │              │
+      │             ├──────────────────────────────────────────────────────────────┤              │
+      │             │ Join: o ⋈ c                                                  │              │
+      │             │ ResultRows: unknown                                          │              │
+      │             │ Type: INNER                                                  │              │
+      │             │ Strictness: ALL                                              │              │
+      │             │ Locality: UNSPECIFIED                                        │              │
+      │             │ Expression: equals(__table1.customer_id, __table2.customer_… │              │
+      │             └───────────────────────────────▲──────────────────────────────┘              │
+      │                                             │                                             │
+      │                ┌────────────────────────────┴────────────────────────────┐                │
+      │ ┌──────────────┴──────────────┐                           ┌──────────────┴──────────────┐ │
+      │ │ ShuffleReceive (exchange_0) │                           │ ShuffleReceive (exchange_1) │ │
+      │ └──────────────▲──────────────┘                           └──────────────▲──────────────┘ │
+      └────────────────┼─────────────────────────────────────────────────────────┼────────────────┘
+                       │ exchange_0 · hash(customer_id)                          │ exchange_1 · hash(customer_id)
+                       │ streaming · 3 → 3                                       │ streaming · 3 → 3
+┌─ F0 · stage_0 ───────┼─────────────────────┐                 ┌─ F1 · stage_1 ──┼────────────────┐
+│                      │                     │                 │                 │                │
+│        ┌─────────────┴────────────┐        │                 │   ┌─────────────┴────────────┐   │
+│        │ ShuffleSend (exchange_0) │        │                 │   │ ShuffleSend (exchange_1) │   │
+│        └─────────────▲────────────┘        │                 │   └─────────────▲────────────┘   │
+│                      │                     │                 │                 │                │
+│ ┌────────────────────┴───────────────────┐ │                 │ ┌───────────────┴──────────────┐ │
+│ │ ReadFromMergeTree (db_XXXXXXXX.orders) │ │                 │ │ ReadFromMergeTree            │ │
+│ ├────────────────────────────────────────┤ │                 │ │ (db_XXXXXXXX.customers)      │ │
+│ │ Read type: Default                     │ │                 │ ├──────────────────────────────┤ │
+│ │ Parts: 1 | Granules: 13                │ │                 │ │ Read type: Default           │ │
+│ │ Output: customer_id, product_id        │ │                 │ │ Parts: 1 | Granules: 1       │ │
+│ └────────────────────────────────────────┘ │                 │ │ Output: customer_id, city_id │ │
+└────────────────────────────────────────────┘                 │ └──────────────────────────────┘ │
+                                                               └──────────────────────────────────┘
+
+Exchanges:
+  exchange_0: hash(customer_id), streaming, F0 -> F2, buckets 3 -> 3
+  exchange_1: hash(customer_id), streaming, F1 -> F2, buckets 3 -> 3
+  exchange_2: hash(city_id), streaming, F2 -> F4, buckets 3 -> 3
+  exchange_3: hash(city_id), streaming, F3 -> F4, buckets 3 -> 3
+  exchange_4: hash(country_id), streaming, F4 -> F6, buckets 3 -> 3
+  exchange_5: hash(country_id), streaming, F5 -> F6, buckets 3 -> 3
+  exchange_6: hash(region_id), streaming, F6 -> F8, buckets 3 -> 3
+  exchange_7: hash(region_id), streaming, F7 -> F8, buckets 3 -> 3
+  exchange_8: hash(product_id), streaming, F8 -> F10, buckets 3 -> 3
+  exchange_9: hash(product_id), streaming, F9 -> F10, buckets 3 -> 3
+  exchange_10: hash(name), streaming, F10 -> F11, buckets 3 -> 3
+  exchange_11: gather, streaming, F11 -> F12, buckets 3 -> 1
+Levels: [F0, F1, F3, F5, F7, F9] -> [F2] -> [F4] -> [F6] -> [F8] -> [F10] -> [F11] -> [F12]

@@ -4,12 +4,15 @@
 #include <Processors/QueryPlan/Fragments/PreparedFragmentGraph.h>
 #include <Processors/QueryPlan/Fragments/TextCanvas.h>
 #include <Processors/QueryPlan/IQueryPlanStep.h>
+#include <Processors/QueryPlan/JoinStep.h>
+#include <Processors/QueryPlan/JoinStepLogical.h>
 #include <Processors/QueryPlan/QueryPlan.h>
 #include <Processors/QueryPlan/QueryPlanFormat.h>
 #include <IO/Operators.h>
 #include <IO/WriteBuffer.h>
 #include <IO/WriteBufferFromString.h>
 #include <Common/Exception.h>
+#include <Common/typeid_cast.h>
 
 #include <fmt/format.h>
 #include <fmt/ranges.h>
@@ -38,6 +41,11 @@ constexpr size_t max_detail_width = 60;
 constexpr size_t max_label_width = 48;
 /// Columns between a step box and the frame of its fragment.
 constexpr Int64 frame_padding = 2;
+/// A step whose subtree is wider than this is stacked when that makes it narrower (see `TreeBuilder::tryStack`).
+constexpr Int64 max_tree_width = 120;
+/// Columns between a stacked box and the subtrees of its inputs on the right.
+constexpr Int64 side_gap = 2;
+
 struct StepBox
 {
     /// The whole text of the step: its name and description.
@@ -52,6 +60,16 @@ struct StepBox
     std::vector<size_t> children;
     /// Set for the root box of a fragment that is drawn under a receive step: index in `FragmentGraph::exchanges`.
     std::optional<size_t> incoming_exchange;
+    /// Set for a stacked box: the index in `children` of the input drawn straight under the box. The other inputs are
+    /// drawn to the right of the box, under its bottom, and the input under the box starts under them.
+    std::optional<size_t> spine;
+    /// For a stacked box: the column of the edge from the input on the right, which enters the right border of the box.
+    Int64 side_edge_x = 0;
+    /// A join step: the edges of a stacked join say which input is `left` and which is `right`.
+    bool is_join = false;
+    /// For a box with inputs in other fragments: the first line under the frame of its fragment where the edges to
+    /// those inputs branch or their labels start.
+    size_t producers_y = 0;
     size_t width = 0;
     Int64 center = 0;
     size_t y = 0;
@@ -288,6 +306,7 @@ private:
     {
         const auto & node = skipExpressions(plan_node);
         size_t index = addBox(stepText(*node.step), stepDetails(*node.step, names), fragment);
+        boxes[index].is_join = typeid_cast<const JoinStep *>(node.step.get()) || typeid_cast<const JoinStepLogical *>(node.step.get());
         if (const auto * exchange_id = PreparedFragmentGraph::tryGetReceiveExchangeId(*node.step))
             receive_boxes[{fragment, *exchange_id}] = index;
         for (const auto * child : node.children)
@@ -419,6 +438,8 @@ private:
     void shiftSubtree(size_t index, Int64 offset)
     {
         boxes[index].center += offset;
+        /// Used only by a stacked box, but kept in step with the centre for every box.
+        boxes[index].side_edge_x += offset;
         for (size_t child : boxes[index].children)
             shiftSubtree(child, offset);
     }
@@ -450,6 +471,115 @@ private:
         return std::max(right + frame_padding, frameLeft(fragment) + static_cast<Int64>(TextCanvas::displayWidth(frames[fragment].title)) + 4);
     }
 
+    /// A box with two inputs, both in its own fragment, can be stacked: a chain of such boxes is what stacking makes
+    /// narrower. A fan-out (a `Union` of many inputs) is not stacked: its inputs would still be side by side. The edges
+    /// to the inputs in other fragments leave the frame straight down, so a receive step is not stacked.
+    bool canStack(size_t index) const
+    {
+        const auto & children = boxes[index].children;
+        if (children.size() != 2)
+            return false;
+        return std::none_of(children.begin(), children.end(), [&](size_t child) { return crossesFragments(index, child); });
+    }
+
+    /// Whether a box of the subtree of `index` in its fragment has an input in another fragment.
+    bool hasProducers(size_t index) const
+    {
+        for (size_t child : boxes[index].children)
+            if (crossesFragments(index, child) || hasProducers(child))
+                return true;
+        return false;
+    }
+
+    /// The rightmost column of the boxes of the subtree of `index` in its fragment.
+    Int64 fragmentSubtreeRight(size_t index) const
+    {
+        Int64 right = boxes[index].right();
+        for (size_t child : boxes[index].children)
+            if (!crossesFragments(index, child))
+                right = std::max(right, fragmentSubtreeRight(child));
+        return right;
+    }
+
+    /// The label of the edge of a stacked join from its input `child_position` (0 for the left input).
+    static std::string_view joinSideLabel(size_t child_position) { return child_position == 0 ? "left" : "right"; }
+
+    /// A tidy tree puts every leaf in its own columns, so a chain of steps with two inputs, such as the chain of joins
+    /// of a reordered join, grows to the right by the width of every side input. Stacking a box draws its wider input
+    /// (the spine) straight under it and its other input to the right of the box, on the lines under the box and above
+    /// the spine. The subtrees on the right of the boxes of a chain are then on different lines, in the same columns,
+    /// so the width is their maximum instead of their sum.
+    ///
+    ///     ┌──────┐
+    ///     │ Join ◀─ right ─┐
+    ///     └──▲───┘         │
+    ///        │ left    ┌───┴───┐
+    ///        │         │ Read  │
+    ///        │         └───────┘
+    ///     ┌──┴───┐
+    ///     │ Join │ ...
+    ///
+    /// The two inputs are laid out tidy in `[child_lefts[i], child_rights[i])`. Rearranges them if the stacked subtree
+    /// is narrower than the tidy one, and returns the first free column to the right of the subtree.
+    ///
+    /// If the subtree on the right reads other fragments, it starts right of every box of the spine in the fragment:
+    /// its edges go down to the bottom of the frame past the spine, and the fragments it reads are drawn before the
+    /// fragments read by the spine (see `layoutSubtreeRows`), so the edges of the spine pass them on the left.
+    Int64 tryStack(
+        size_t index, Int64 left, Int64 tidy_right, const std::vector<Int64> & child_lefts, const std::vector<Int64> & child_rights)
+    {
+        chassert(boxes[index].children.size() == 2);
+        const size_t spine = child_rights[1] - child_lefts[1] > child_rights[0] - child_lefts[0] ? 1 : 0;
+        const size_t side = 1 - spine;
+        const size_t spine_child = boxes[index].children[spine];
+        const size_t side_child = boxes[index].children[side];
+        const Int64 tidy_center = boxes[index].center;
+
+        /// The spine at the left bound of the subtree, the box over it.
+        Int64 spine_shift = left - child_lefts[spine];
+        shiftSubtree(spine_child, spine_shift);
+        boxes[index].center = boxes[spine_child].center;
+        /// A box wider than its spine must not cross the left bound of its subtree.
+        Int64 overflow = left + padding - boxes[index].left();
+        if (overflow > 0)
+        {
+            shiftSubtree(spine_child, overflow);
+            spine_shift += overflow;
+            boxes[index].center += overflow;
+        }
+        const auto & stacked = boxes[index];
+
+        /// The other input right of the box. The edge leaves the right border of the box on its first line,
+        /// `◀─ right ─┐` (`◀──┐` for a step that is not a join), and goes down to the centre of the input.
+        Int64 side_left = stacked.right() + 1 + side_gap;
+        if (hasProducers(side_child))
+            side_left = std::max(side_left, fragmentSubtreeRight(spine_child) + 1 + side_gap);
+        Int64 side_shift = side_left - child_lefts[side];
+        Int64 label_width = stacked.is_join ? static_cast<Int64>(joinSideLabel(side).size()) + 2 : 0;
+        Int64 min_edge_x = stacked.right() + 3 + label_width;
+        Int64 edge_x = boxes[side_child].center + side_shift;
+        if (edge_x < min_edge_x)
+        {
+            side_shift += min_edge_x - edge_x;
+            edge_x = min_edge_x;
+        }
+        shiftSubtree(side_child, side_shift);
+
+        Int64 stacked_right
+            = std::max({child_rights[spine] + spine_shift, child_rights[side] + side_shift, stacked.right() + 1 + padding});
+        if (stacked_right < tidy_right)
+        {
+            boxes[index].spine = spine;
+            boxes[index].side_edge_x = edge_x;
+            return stacked_right;
+        }
+
+        shiftSubtree(spine_child, -spine_shift);
+        shiftSubtree(side_child, -side_shift);
+        boxes[index].center = tidy_center;
+        return tidy_right;
+    }
+
     /// Places the subtree of `index` in the columns from `left` on, as a tidy tree: leaves left to right, a step centred
     /// between its first and last input. Returns the first free column to the right of the subtree.
     Int64 layoutColumns(size_t index, Int64 left)
@@ -464,9 +594,17 @@ private:
         }
         else
         {
+            /// The bounds of the subtree of every input, to rearrange them if the box is stacked.
+            std::vector<Int64> child_lefts;
+            std::vector<Int64> child_rights;
             Int64 x = left;
             for (size_t child : step_box.children)
-                x = layoutColumns(child, x) + sibling_gap;
+            {
+                child_lefts.push_back(x);
+                x = layoutColumns(child, x);
+                child_rights.push_back(x);
+                x += sibling_gap;
+            }
             right = x - sibling_gap;
 
             auto & placed = boxes[index];
@@ -477,8 +615,16 @@ private:
             {
                 shiftSubtree(index, overflow);
                 right += overflow;
+                for (size_t i = 0; i < child_lefts.size(); ++i)
+                {
+                    child_lefts[i] += overflow;
+                    child_rights[i] += overflow;
+                }
             }
             right = std::max(right, placed.right() + 1 + padding);
+
+            if (right - left > max_tree_width && canStack(index))
+                right = tryStack(index, left, right, child_lefts, child_rights);
         }
 
         /// The frame of a fragment that an edge enters reaches left of its boxes when its title is long (see `frameLeft`), and
@@ -503,56 +649,106 @@ private:
         return right;
     }
 
-    /// Assigns lines to the boxes of `fragment`, whose root box is on line `top_box_y`, and then to the fragments
-    /// drawn under it.
-    void layoutRows(size_t fragment, size_t top_box_y)
+    /// An edge from a box to the root box of a fragment it reads, drawn under the frame of the box.
+    struct ProducerEdge
     {
-        std::vector<size_t> producers;
-        size_t bottom = 0;
-        bool branches_to_producers = false;
+        size_t receive_box;
+        size_t producer_root;
+    };
 
-        std::vector<std::pair<size_t, size_t>> stack{{frames[fragment].root_box, top_box_y}};
-        while (!stack.empty())
+    /// The fragments read by a fragment, by band: the fragments of a band are drawn under the fragments of the
+    /// previous band, so that the edges of a stacked box to the fragments read by its spine pass the fragments read by
+    /// its inputs on the right (see `tryStack`). Without a stacked box, every fragment is in band 0.
+    using ProducerBands = std::vector<std::vector<ProducerEdge>>;
+
+    /// Assigns lines to the boxes of the subtree of `index` in its fragment, with the box on line `y`. The fragments
+    /// that the subtree reads are added to `bands`, from band `band` on. Returns the bottom line of the subtree and
+    /// sets `last_band` to the last band it used.
+    size_t layoutSubtreeRows(size_t index, size_t y, size_t band, ProducerBands & bands, size_t & last_band)
+    {
+        boxes[index].y = y;
+        size_t bottom = boxes[index].bottom();
+        last_band = band;
+
+        std::vector<size_t> in_fragment;
+        for (size_t child : boxes[index].children)
         {
-            auto [index, y] = stack.back();
-            stack.pop_back();
-            boxes[index].y = y;
-            bottom = std::max(bottom, boxes[index].bottom());
-
-            const auto & children = boxes[index].children;
-            size_t in_fragment = 0;
-            size_t to_producers = 0;
-            for (size_t child : children)
+            if (crossesFragments(index, child))
             {
-                if (crossesFragments(index, child))
-                {
-                    producers.push_back(child);
-                    ++to_producers;
-                }
-                else
-                    ++in_fragment;
+                if (bands.size() <= band)
+                    bands.resize(band + 1);
+                bands[band].push_back({index, child});
             }
-            if (to_producers > 1)
-                branches_to_producers = true;
-            /// One input: `▲`, `│`, then the input box. Several: one more line for the branch.
-            size_t child_y = boxes[index].bottom() + 1 + (in_fragment > 1 ? 2 : 1);
-            for (size_t child : children)
-                if (!crossesFragments(index, child))
-                    stack.emplace_back(child, child_y);
+            else
+                in_fragment.push_back(child);
         }
+
+        if (!boxes[index].spine)
+        {
+            /// One input: `▲`, `│`, then the input box. Several: one more line for the branch.
+            size_t child_y = boxes[index].bottom() + 1 + (in_fragment.size() > 1 ? 2 : 1);
+            for (size_t child : in_fragment)
+            {
+                size_t child_last_band = band;
+                bottom = std::max(bottom, layoutSubtreeRows(child, child_y, band, bands, child_last_band));
+                last_band = std::max(last_band, child_last_band);
+            }
+            return bottom;
+        }
+
+        /// A stacked box: the input on the right starts two lines under the box, and the spine starts under it. The
+        /// fragments read by the spine are drawn after the fragments read by the input on the right.
+        const size_t spine_child = boxes[index].children[*boxes[index].spine];
+        const size_t side_child = boxes[index].children[1 - *boxes[index].spine];
+        size_t side_last_band = band;
+        const size_t side_bottom = layoutSubtreeRows(side_child, boxes[index].bottom() + 2, band, bands, side_last_band);
+        size_t spine_last_band = side_last_band + 1;
+        bottom = std::max(side_bottom, layoutSubtreeRows(spine_child, side_bottom + 2, side_last_band + 1, bands, spine_last_band));
+        last_band = spine_last_band;
+        return bottom;
+    }
+
+    /// Assigns lines to the boxes of `fragment`, whose root box is on line `top_box_y`, and then to the fragments
+    /// drawn under it. Returns the bottom line of the drawing of the fragment and of the fragments under it.
+    size_t layoutRows(size_t fragment, size_t top_box_y)
+    {
+        ProducerBands bands;
+        size_t last_band = 0;
+        const size_t bottom = layoutSubtreeRows(frames[fragment].root_box, top_box_y, 0, bands, last_band);
 
         auto & frame = frames[fragment];
         frame.bottom = bottom + 1;
 
-        size_t label_height = 0;
-        for (size_t producer_root : producers)
-            label_height = std::max(label_height, labelLines(*boxes[producer_root].incoming_exchange).size());
+        size_t previous_bottom = frame.bottom;
+        for (const auto & band : bands)
+        {
+            if (band.empty())
+                continue;
 
-        /// Under the frame: the branch line if one box has several producers, the labels, the producer frame top
-        /// with its title, an empty line, then the first box of the producer.
-        size_t producer_top = frame.bottom + 1 + (branches_to_producers ? 1 : 0) + label_height;
-        for (size_t producer_root : producers)
-            layoutRows(boxes[producer_root].fragment, producer_top + 2);
+            size_t label_height = 0;
+            std::map<size_t, size_t> producers_per_box;
+            for (const auto & edge : band)
+            {
+                label_height = std::max(label_height, labelLines(*boxes[edge.producer_root].incoming_exchange).size());
+                ++producers_per_box[edge.receive_box];
+            }
+            bool branches_to_producers = std::any_of(
+                producers_per_box.begin(), producers_per_box.end(), [](const auto & entry) { return entry.second > 1; });
+
+            /// Under the frame, or under the fragments of the previous band: the branch line if one box has several
+            /// producers, the labels, the producer frame top with its title, an empty line, then the first box of the
+            /// producer.
+            const size_t producers_y = previous_bottom + 1;
+            const size_t producer_top = producers_y + (branches_to_producers ? 1 : 0) + label_height;
+            size_t band_bottom = previous_bottom;
+            for (const auto & edge : band)
+            {
+                boxes[edge.receive_box].producers_y = producers_y;
+                band_bottom = std::max(band_bottom, layoutRows(boxes[edge.producer_root].fragment, producer_top + 2));
+            }
+            previous_bottom = band_bottom;
+        }
+        return previous_bottom;
     }
 
     void drawFrame(TextCanvas & canvas, size_t fragment)
@@ -578,6 +774,36 @@ private:
         canvas.put(static_cast<size_t>(parent_center), y, parent_over_child ? "┼" : "┴");
     }
 
+    /// The edges of a stacked box (see `tryStack`) to its two inputs, which are in its fragment: straight down to the
+    /// spine, and from the right border to the input on the right. A join labels both edges with the side of the input.
+    void drawStackedEdges(TextCanvas & canvas, size_t index)
+    {
+        const auto & step_box = boxes[index];
+        const size_t spine_position = *step_box.spine;
+        const auto & spine = boxes[step_box.children[spine_position]];
+        const auto center = static_cast<size_t>(step_box.center);
+
+        for (size_t y = step_box.bottom() + 1; y < spine.y; ++y)
+            canvas.put(center, y, "│");
+        canvas.put(static_cast<size_t>(spine.center), spine.y, "┴");
+        if (step_box.is_join)
+            canvas.put(center + 2, step_box.bottom() + 1, joinSideLabel(spine_position));
+
+        const auto & side = boxes[step_box.children[1 - spine_position]];
+        const auto right = static_cast<size_t>(step_box.right());
+        const auto edge_x = static_cast<size_t>(step_box.side_edge_x);
+        const size_t edge_y = step_box.y + 1;
+        canvas.put(right, edge_y, "◀");
+        for (size_t x = right + 1; x < edge_x; ++x)
+            canvas.put(x, edge_y, "─");
+        if (step_box.is_join)
+            canvas.put(right + 2, edge_y, fmt::format(" {} ", joinSideLabel(1 - spine_position)));
+        canvas.put(edge_x, edge_y, "┐");
+        for (size_t y = edge_y + 1; y < side.y; ++y)
+            canvas.put(edge_x, y, "│");
+        canvas.put(edge_x, side.y, "┴");
+    }
+
     void drawEdges(TextCanvas & canvas, size_t index)
     {
         const auto & step_box = boxes[index];
@@ -592,7 +818,11 @@ private:
         for (size_t child : step_box.children)
             (crossesFragments(index, child) ? producers : in_fragment).push_back(child);
 
-        if (!in_fragment.empty())
+        if (step_box.spine)
+        {
+            drawStackedEdges(canvas, index);
+        }
+        else if (!in_fragment.empty())
         {
             canvas.put(center, step_box.bottom() + 1, "│");
             if (in_fragment.size() > 1)
@@ -616,7 +846,16 @@ private:
             canvas.put(center, y, "│");
         canvas.put(center, frame.bottom, "┼");
 
-        size_t labels_y = frame.bottom + 1;
+        /// The fragments of a later band are drawn under the fragments of the earlier bands: the edge passes them, in
+        /// the line of its exchange when it goes to one fragment.
+        const char * passing_line = "│";
+        if (producers.size() == 1
+            && graph.exchanges[*boxes[producers.front()].incoming_exchange].mode == ExchangeDescription::Kind::Persisted)
+            passing_line = "╎";
+        for (size_t y = frame.bottom + 1; y < step_box.producers_y; ++y)
+            canvas.put(center, y, passing_line);
+
+        size_t labels_y = step_box.producers_y;
         if (producers.size() > 1)
         {
             std::vector<Int64> centers;
